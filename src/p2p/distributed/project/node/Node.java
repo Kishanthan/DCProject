@@ -4,9 +4,7 @@ import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Scanner;
+import java.util.*;
 
 public class Node {
     public static final String REG_OK = "REGOK";
@@ -22,9 +20,10 @@ public class Node {
     private List<FileMetaData> fileList = new ArrayList<>();
 
     public static void main(String[] args) {
-        int port = 11002;
+        String[] fileList = assignFiles();
+        int port = 11003;
 //        int port = Integer.parseInt(System.getProperty("port"));
-        String username = "kicha2";
+        String username = "kicha3";
 //        String username = System.getProperty("username");
 //        String bootstrapNode = System.getProperty("bootstrap.address");
 
@@ -38,10 +37,53 @@ public class Node {
 
         //3. start listening
         //startListening(port);
-        (new NodeThread(port)).start();
+        (new NodeThread(fileList, port)).start();
 
         //4. start listening to incoming search queries
         startListeningForSearchQueries(peers);
+    }
+
+    private static String[] assignFiles() {
+        String[] fileList = {
+                "Adventures of Tintin",
+                "Jack and Jill",
+                "Glee",
+                "The Vampire Diarie",
+                "King Arthur",
+                "Windows XP",
+                "Harry Potter",
+                "Kung Fu Panda",
+                "Lady Gaga",
+                "Twilight",
+                "Windows 8",
+                "Mission Impossible",
+                "Turn Up The Music",
+                "Super Mario",
+                "American Pickers",
+                "Microsoft Office 2010",
+                "Happy Feet",
+                "Modern Family",
+                "American Idol",
+                "Hacking for Dummies",
+        };
+
+        Random random = new Random();
+
+        String[] subFileList = new String[5];
+        System.out.println("**** Assigned File Names ****");
+        for (int i = 0; i < 5; i++) {
+            int randIndex = random.nextInt(fileList.length-1);
+
+            if (!Arrays.asList(subFileList).contains(fileList[randIndex])) {
+                subFileList[i] = fileList[randIndex];
+                System.out.println(subFileList[i]);
+            } else {
+                i--;
+            }
+        }
+        System.out.println("*****************************\n");
+
+        return subFileList;
     }
 
     private static void startListeningForSearchQueries(List<Peer> peers) {
@@ -188,8 +230,21 @@ public class Node {
 
 class NodeThread extends Thread {
 
+    String[] fileList;
     int port;
-    NodeThread(int port) { this.port = port; }
+    NodeThread(String[] fileList, int port) { this.fileList = fileList; this.port = port; }
+
+    public static String searchInFileList(String[] fileList, String fileName) {
+        for (int i = 0; i < 5; i++) {
+            log(Node.INFO, fileList[i]);
+        }
+        log(Node.INFO, fileName);
+        if (Arrays.asList(fileList).contains(fileName)) {
+            return "File Exists";
+        } else {
+            return "File Not found";
+        }
+    }
 
     public void run() {
         DatagramSocket serverSocket;
@@ -209,7 +264,14 @@ class NodeThread extends Thread {
                 byte[] sendData = null;
                 if (response.length >= 5 && Node.SER.equals(response[1])) {
                     log(Node.INFO, "SEARCH QUERY RECEIVED : " + incomingMessage);
-                    sendData  = ("SEARCH QUERY RECEIVED ACKNOWLEDGEMENT: " + incomingMessage).getBytes();
+
+                    String filename = response[4];
+                    for (int i = 5; i <= response.length-1; i++) {
+                        filename += " " + response[i];
+                    }
+
+                    filename = filename.replace("\"", "");
+                    sendData  = ("SEARCH QUERY RESULT: " + searchInFileList(fileList, filename)).getBytes();
                 } else if (response.length >= 4 && Node.JOIN.equals(response[1])) {
                     log(Node.INFO, "JOIN QUERY RECEIVED : " + incomingMessage);
                     sendData = "0014 JOINOK 0".getBytes();
