@@ -14,6 +14,7 @@ public class Node {
     public static final String DEBUG = "DEBUG";
     public static final String SER = "SER";
     public static final String JOIN = "JOIN";
+    public static final String SEROK = "SEROK";
 
 
     private List<Peer> routingTable = new ArrayList<>();
@@ -21,26 +22,28 @@ public class Node {
 
     public static void main(String[] args) {
         String[] fileList = assignFiles();
-        int port = 11003;
+        String bootstrapIpWithPort = "192.168.8.100:55555";
+        String nodeIp = "192.168.8.100";
+        int port = 11004;
 //        int port = Integer.parseInt(System.getProperty("port"));
-        String username = "kicha3";
+        String username = "kicha4";
 //        String username = System.getProperty("username");
 //        String bootstrapNode = System.getProperty("bootstrap.address");
 
         //1. connect to bootstrap and get peers
-        List<Peer> peers = connectToBootstrapNode("192.168.8.100:55555", port, username);
+        List<Peer> peers = connectToBootstrapNode(bootstrapIpWithPort, port, username);
 
         log(INFO, "Peers : " + peers);
 
         //2. connect to peers from above
-        connectToPeers(peers);
+        connectToPeers(peers, nodeIp, port);
 
         //3. start listening
         //startListening(port);
-        (new NodeThread(fileList, port)).start();
+        (new NodeThread(fileList, nodeIp, port, peers)).start();
 
         //4. start listening to incoming search queries
-        startListeningForSearchQueries(peers);
+        startListeningForSearchQueries(peers, nodeIp, port);
     }
 
     private static String[] assignFiles() {
@@ -86,7 +89,7 @@ public class Node {
         return subFileList;
     }
 
-    private static void startListeningForSearchQueries(List<Peer> peers) {
+    private static void startListeningForSearchQueries(List<Peer> peers, String nodeIp, int port) {
         String fileName;
         Scanner in = new Scanner(System.in);
 
@@ -95,11 +98,11 @@ public class Node {
             fileName = in.nextLine();
             System.out.println("File Name: " + fileName);
 
-            sendSearchQuery(fileName, peers);
+            sendSearchQuery(fileName, peers, "", nodeIp, port);
         }
     }
 
-    private static void sendSearchQuery(String fileName, List<Peer> peers) {
+    public static void sendSearchQuery(String fileName, List<Peer> peers, String searchQuery, String nodeIp, int port) {
         DatagramSocket clientSocket = null;
 
         try {
@@ -107,8 +110,15 @@ public class Node {
                 InetAddress address = InetAddress.getByName(peer.getIp());
                 clientSocket = new DatagramSocket();
                 byte[] receiveData = new byte[1024];
-                String sentence = " SER " + peer.getIp() + " " + peer.getPort() + " \"" + fileName + "\"";
-                sentence = String.format("%04d", sentence.length() + 4) + sentence;
+
+                String sentence = "";
+
+                if (searchQuery == "") {
+                    sentence = " SER " + nodeIp + " " + port + " \"" + fileName + "\"";
+                    sentence = String.format("%04d", sentence.length() + 4) + sentence;
+                } else {
+                    sentence = searchQuery;
+                }
 
                 byte[] sendData = sentence.getBytes();
                 DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, address, peer.getPort());
@@ -152,14 +162,14 @@ public class Node {
         }
     }*/
 
-    private static void connectToPeers(List<Peer> peers) {
+    private static void connectToPeers(List<Peer> peers, String nodeIp, int port) {
         DatagramSocket clientSocket = null;
         try {
             for (Peer peer : peers) {
                 InetAddress address = InetAddress.getByName(peer.getIp());
                 clientSocket = new DatagramSocket();
                 byte[] receiveData = new byte[1024];
-                String sentence = "0027 JOIN " + peer.getIp() + " " + peer.getPort();
+                String sentence = "0027 JOIN " + nodeIp + " " + port;
                 byte[] sendData = sentence.getBytes();
                 DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, address, peer.getPort());
                 clientSocket.send(sendPacket);
@@ -232,17 +242,27 @@ class NodeThread extends Thread {
 
     String[] fileList;
     int port;
-    NodeThread(String[] fileList, int port) { this.fileList = fileList; this.port = port; }
+    String nodeIp;
+    List<Peer> peers;
+
+    NodeThread(String[] fileList, String nodeIp, int port, List<Peer> peers) { this.fileList = fileList; this.nodeIp = nodeIp; this.port = port; this.peers = peers;}
 
     public static String searchInFileList(String[] fileList, String fileName) {
+
+        /*String matchingFileNames = "";
+
         for (int i = 0; i < 5; i++) {
             log(Node.INFO, fileList[i]);
-        }
-        log(Node.INFO, fileName);
+            if (fileName == fileList[i]) {
+                matchingFileNames = ""
+            }
+
+        }*/
+
         if (Arrays.asList(fileList).contains(fileName)) {
-            return "File Exists";
+            return fileName;
         } else {
-            return "File Not found";
+            return "FALSE";
         }
     }
 
@@ -262,6 +282,10 @@ class NodeThread extends Thread {
 
                 String[] response = incomingMessage.split(" ");
                 byte[] sendData = null;
+
+                InetAddress responseAddress = incoming.getAddress();
+                int responsePort = incoming.getPort();
+
                 if (response.length >= 5 && Node.SER.equals(response[1])) {
                     log(Node.INFO, "SEARCH QUERY RECEIVED : " + incomingMessage);
 
@@ -271,15 +295,42 @@ class NodeThread extends Thread {
                     }
 
                     filename = filename.replace("\"", "");
-                    sendData  = ("SEARCH QUERY RESULT: " + searchInFileList(fileList, filename)).getBytes();
+
+                    String fileSearchResults = searchInFileList(fileList, filename);
+                    String responseString = "";
+
+                    if (fileSearchResults == "FALSE") {
+                        if (peers.size() > 0) {
+                            Node.sendSearchQuery(filename, peers, incomingMessage, nodeIp, port);
+                        }
+
+                    } else {
+
+                        log(Node.INFO, response[2]);
+                        log(Node.INFO, response[3]);
+                        responseAddress = InetAddress.getByName(response[2]);
+                        responsePort = Integer.parseInt(response[3]);
+
+                        responseString = " SEROK " + nodeIp + " " + port + " " + fileSearchResults;
+                        responseString = String.format("%04d", responseString.length() + 4) + responseString;
+
+
+                    }
+                    sendData  = responseString.getBytes();
+
                 } else if (response.length >= 4 && Node.JOIN.equals(response[1])) {
                     log(Node.INFO, "JOIN QUERY RECEIVED : " + incomingMessage);
                     sendData = "0014 JOINOK 0".getBytes();
+                } else if (response.length >= 4 && Node.SEROK.equals(response[1])) {
+                    log(Node.INFO, "SEARCH RESULTS RECEIVED : " + incomingMessage);
                 }
 
-                DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, incoming.getAddress(),
-                        incoming.getPort());
-                serverSocket.send(sendPacket);
+                if (sendData != null) {
+                    log(Node.INFO,"Came untill where I want");
+                    DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, responseAddress,
+                            responsePort);
+                    serverSocket.send(sendPacket);
+                }
             }
         } catch (IOException e) {
             log(Node.ERROR, e);
