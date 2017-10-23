@@ -26,6 +26,7 @@ public class Node {
     private String nodeIp = "";
     private int nodePort = 11004;
     private String nodeName = "node4";
+    private List<String> recievedSearchQueryList = new ArrayList<>();
 
 
     public String getBootstrapIp() {
@@ -54,6 +55,11 @@ public class Node {
 
     public String[] getFileList() {
         return this.fileList;
+    }
+
+    public void addToRoutingTable(Peer peer) {
+        this.routingTable.add(peer);
+        log(INFO, this.routingTable);
     }
 
     public static void main(String[] args) {
@@ -144,22 +150,39 @@ public class Node {
         }
     }
 
+    private String getSenderIpFromSearchQuery(String searchQuery) {
+        String[] query = searchQuery.split(" ");
+        return query[2];
+    }
+
     public void sendSearchQuery(String fileName, String searchQuery) {
         DatagramSocket clientSocket = null;
 
         try {
             for (Peer peer : this.routingTable) {
-                InetAddress address = InetAddress.getByName(peer.getIp());
-                clientSocket = new DatagramSocket();
-                byte[] receiveData = new byte[1024];
 
                 String message = "";
 
                 if (searchQuery == "") {
                     message = this.prependTheLengthToMessage("SER " + this.nodeIp + " " + this.nodePort + " \"" + fileName + "\"");
                 } else {
+                    if (this.recievedSearchQueryList.contains(searchQuery)) {
+                        break;
+                    } else {
+                        this.recievedSearchQueryList.add(searchQuery);
+                    }
+
+                    if (this.getSenderIpFromSearchQuery(searchQuery) == peer.getIp()) {
+                        continue;
+                    }
                     message = searchQuery;
                 }
+
+                InetAddress address = InetAddress.getByName(peer.getIp());
+                clientSocket = new DatagramSocket();
+                byte[] receiveData = new byte[1024];
+
+
 
                 byte[] sendData = message.getBytes();
                 DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, address, peer.getPort());
@@ -193,7 +216,7 @@ public class Node {
                 log(INFO, responseMessage);
 
                 if (responseMessage.contains("JOINOK 0")) {
-                    this.routingTable.add(peer);
+                    this.addToRoutingTable(peer);
                 } else {
                     log(ERROR, "Error in connecting to the peer");
                 }
@@ -342,6 +365,7 @@ class NodeThread extends Thread {
                 } else if (response.length >= 4 && Node.JOIN.equals(response[1])) {
                     node.log(Node.INFO, "JOIN QUERY RECEIVED : " + incomingMessage);
                     sendData = node.prependTheLengthToMessage("JOINOK 0").getBytes();
+                    node.addToRoutingTable(new Peer(responseAddress.getHostAddress(), Integer.parseInt(response[3])));
                 } else if (response.length >= 4 && Node.SEROK.equals(response[1])) {
                     node.log(Node.INFO, "SEARCH RESULTS RECEIVED : " + incomingMessage);
                 }
