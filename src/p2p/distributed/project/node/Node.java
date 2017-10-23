@@ -5,6 +5,7 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.util.*;
+import java.net.NetworkInterface;
 
 public class Node {
     public static final String REG_OK = "REGOK";
@@ -18,35 +19,76 @@ public class Node {
 
 
     private List<Peer> routingTable = new ArrayList<>();
-    private List<FileMetaData> fileList = new ArrayList<>();
+    private String[] fileList;
+
+    private String bootstrapIp = "192.168.8.101";
+    private int bootstrapPort = 55555;
+    private String nodeIp = "";
+    private int nodePort = 11004;
+    private String nodeName = "node4";
+
+
+    public String getBootstrapIp() {
+        return this.bootstrapIp;
+    }
+
+    public int getBootstrapPort() {
+        return this.bootstrapPort;
+    }
+
+    public String getNodeIp() {
+        return this.nodeIp;
+    }
+
+    public int getNodePort() {
+        return this.nodePort;
+    }
+
+    public String getNodeName() {
+        return this.nodeName;
+    }
+
+    public List<Peer> getRoutingTable() {
+        return this.routingTable;
+    }
+
+    public String[] getFileList() {
+        return this.fileList;
+    }
 
     public static void main(String[] args) {
-        String[] fileList = assignFiles();
-        String bootstrapIpWithPort = "192.168.8.100:55555";
-        String nodeIp = "192.168.8.100";
-        int port = 11004;
-//        int port = Integer.parseInt(System.getProperty("port"));
-        String username = "kicha4";
-//        String username = System.getProperty("username");
-//        String bootstrapNode = System.getProperty("bootstrap.address");
+
+
+        Node node = new Node();
+        node.assignTheNodeIpAddress();
+        node.fileList = node.assignFiles();
+
+        List<Peer> peersToConnect = node.connectToBootstrapNode(node.bootstrapIp, node.bootstrapPort, node.nodeIp, node.nodePort, node.nodeName);
 
         //1. connect to bootstrap and get peers
-        List<Peer> peers = connectToBootstrapNode(bootstrapIpWithPort, port, username);
-
-        log(INFO, "Peers : " + peers);
+        node.log(INFO, "Peers : " + peersToConnect);
 
         //2. connect to peers from above
-        connectToPeers(peers, nodeIp, port);
+        node.connectToPeers(peersToConnect, node.nodeIp, node.nodePort);
 
         //3. start listening
         //startListening(port);
-        (new NodeThread(fileList, nodeIp, port, peers)).start();
+        (new NodeThread(node)).start();
 
         //4. start listening to incoming search queries
-        startListeningForSearchQueries(peers, nodeIp, port);
+        node.startListeningForSearchQueries();
     }
 
-    private static String[] assignFiles() {
+    private void assignTheNodeIpAddress() {
+        try {
+            DatagramSocket socket = new DatagramSocket();
+            socket.connect(InetAddress.getByName("8.8.8.8"), 10002);
+            this.nodeIp = socket.getLocalAddress().getHostAddress();
+        } catch (IOException e) {
+        }
+    }
+
+    private String[] assignFiles() {
         String[] fileList = {
                 "Adventures of Tintin",
                 "Jack and Jill",
@@ -89,7 +131,7 @@ public class Node {
         return subFileList;
     }
 
-    private static void startListeningForSearchQueries(List<Peer> peers, String nodeIp, int port) {
+    private void startListeningForSearchQueries() {
         String fileName;
         Scanner in = new Scanner(System.in);
 
@@ -98,29 +140,28 @@ public class Node {
             fileName = in.nextLine();
             System.out.println("File Name: " + fileName);
 
-            sendSearchQuery(fileName, peers, "", nodeIp, port);
+            this.sendSearchQuery(fileName, "");
         }
     }
 
-    public static void sendSearchQuery(String fileName, List<Peer> peers, String searchQuery, String nodeIp, int port) {
+    public void sendSearchQuery(String fileName, String searchQuery) {
         DatagramSocket clientSocket = null;
 
         try {
-            for (Peer peer : peers) {
+            for (Peer peer : this.routingTable) {
                 InetAddress address = InetAddress.getByName(peer.getIp());
                 clientSocket = new DatagramSocket();
                 byte[] receiveData = new byte[1024];
 
-                String sentence = "";
+                String message = "";
 
                 if (searchQuery == "") {
-                    sentence = " SER " + nodeIp + " " + port + " \"" + fileName + "\"";
-                    sentence = String.format("%04d", sentence.length() + 4) + sentence;
+                    message = this.prependTheLengthToMessage("SER " + this.nodeIp + " " + this.nodePort + " \"" + fileName + "\"");
                 } else {
-                    sentence = searchQuery;
+                    message = searchQuery;
                 }
 
-                byte[] sendData = sentence.getBytes();
+                byte[] sendData = message.getBytes();
                 DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, address, peer.getPort());
                 clientSocket.send(sendPacket);
                 DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
@@ -128,8 +169,6 @@ public class Node {
                 String responseMessage = new String(receivePacket.getData()).trim();
 
                 log(INFO, responseMessage);
-
-                //TODO: Receive the file list
             }
         } catch (IOException e) {
             log(ERROR, e);
@@ -137,46 +176,27 @@ public class Node {
         }
     }
 
-    /*private static void startListening(int port) {
-        DatagramSocket serverSocket;
-        try {
-            serverSocket = new DatagramSocket(port);
-            log(INFO, "Started listening on '" + port + "' for incoming data...");
-
-            while (true) {
-                byte[] buffer = new byte[65536];
-                DatagramPacket incoming = new DatagramPacket(buffer, buffer.length);
-                serverSocket.receive(incoming);
-
-                byte[] data = incoming.getData();
-                String incomingMessage = new String(data, 0, incoming.getLength());
-                log(INFO, "Received : " + incomingMessage);
-                byte[] sendData = "0014 JOINOK 0".getBytes();
-                DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, incoming.getAddress(),
-                        incoming.getPort());
-                serverSocket.send(sendPacket);
-            }
-        } catch (IOException e) {
-            log(ERROR, e);
-            e.printStackTrace();;
-        }
-    }*/
-
-    private static void connectToPeers(List<Peer> peers, String nodeIp, int port) {
+    private void connectToPeers(List<Peer> peersToConnect, String nodeIp, int nodePort) {
         DatagramSocket clientSocket = null;
         try {
-            for (Peer peer : peers) {
+            for (Peer peer : peersToConnect) {
                 InetAddress address = InetAddress.getByName(peer.getIp());
                 clientSocket = new DatagramSocket();
                 byte[] receiveData = new byte[1024];
-                String sentence = "0027 JOIN " + nodeIp + " " + port;
-                byte[] sendData = sentence.getBytes();
+                String message = this.prependTheLengthToMessage("JOIN " + nodeIp + " " + nodePort);
+                byte[] sendData = message.getBytes();
                 DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, address, peer.getPort());
                 clientSocket.send(sendPacket);
                 DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
                 clientSocket.receive(receivePacket);
                 String responseMessage = new String(receivePacket.getData()).trim();
                 log(INFO, responseMessage);
+
+                if (responseMessage.contains("JOINOK 0")) {
+                    this.routingTable.add(peer);
+                } else {
+                    log(ERROR, "Error in connecting to the peer");
+                }
 
                 //TODO: update file list
             }
@@ -186,24 +206,28 @@ public class Node {
         }
     }
 
-    private static List<Peer> connectToBootstrapNode(String bootstrapAddress, int myPort, String username) {
+    public String prependTheLengthToMessage(String message) {
+        return String.format("%04d", message.length() + 5) + " " + message;
+    }
+
+    private List<Peer> connectToBootstrapNode(String bootstrapIp,  int bootstrapPort, String nodeIp, int nodePort, String nodeName) {
         List<Peer> peers = new ArrayList<>();
         DatagramSocket clientSocket = null;
+
         try {
-            String[] address = bootstrapAddress.split(":");
-            InetAddress bootstrapHost = InetAddress.getByName(address[0]);
-            int bootstrapPort = Integer.parseInt(address[1]);
+            InetAddress bootstrapHost = InetAddress.getByName(bootstrapIp);
             clientSocket = new DatagramSocket();
             byte[] receiveData = new byte[1024];
-            String sentence = "0033 REG " + address[0] + " " + myPort + " " + username;
-            byte[] sendData = sentence.getBytes();
+            String message = this.prependTheLengthToMessage("REG " + nodeIp + " " + nodePort + " " + nodeName);
+            byte[] sendData = message.getBytes();
+
             DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, bootstrapHost, bootstrapPort);
             clientSocket.send(sendPacket);
             DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
             clientSocket.receive(receivePacket);
+
             String responseMessage = new String(receivePacket.getData()).trim();
             log(INFO, "Bootstrap server : " + responseMessage);
-
 
             //unsuccessful reply - FROM SERVER:0015 REGOK 9998
             //successful reply - FROM SERVER:0050 REGOK 2 10.100.1.124 57314 10.100.1.124 56314
@@ -232,22 +256,20 @@ public class Node {
         return peers;
     }
 
-
-    private static void log(String level, Object msg) {
+    public void log(String level, Object msg) {
         System.out.println(level + " : " + msg.toString());
     }
 }
 
 class NodeThread extends Thread {
 
-    String[] fileList;
-    int port;
-    String nodeIp;
-    List<Peer> peers;
+    Node node;
 
-    NodeThread(String[] fileList, String nodeIp, int port, List<Peer> peers) { this.fileList = fileList; this.nodeIp = nodeIp; this.port = port; this.peers = peers;}
+    NodeThread(Node node) { this.node = node;}
 
-    public static String searchInFileList(String[] fileList, String fileName) {
+    private String searchInFileList(String fileName) {
+
+        String[] fileList = node.getFileList();
 
         /*String matchingFileNames = "";
 
@@ -266,11 +288,22 @@ class NodeThread extends Thread {
         }
     }
 
+    private String getFileNameFromSearchQuery(String query) {
+        String[] response = query.split(" ");
+
+        String filename = response[4];
+        for (int i = 5; i <= response.length-1; i++) {
+            filename += " " + response[i];
+        }
+
+        return filename.replace("\"", "");
+    }
+
     public void run() {
         DatagramSocket serverSocket;
         try {
-            serverSocket = new DatagramSocket(port);
-            log(Node.INFO, "Started listening on '" + port + "' for incoming data...");
+            serverSocket = new DatagramSocket(node.getNodePort());
+            node.log(Node.INFO, "Started listening on '" + node.getNodePort() + "' for incoming data...");
 
             while (true) {
                 byte[] buffer = new byte[65536];
@@ -287,59 +320,41 @@ class NodeThread extends Thread {
                 int responsePort = incoming.getPort();
 
                 if (response.length >= 5 && Node.SER.equals(response[1])) {
-                    log(Node.INFO, "SEARCH QUERY RECEIVED : " + incomingMessage);
+                    node.log(Node.INFO, "SEARCH QUERY RECEIVED : " + incomingMessage);
 
-                    String filename = response[4];
-                    for (int i = 5; i <= response.length-1; i++) {
-                        filename += " " + response[i];
-                    }
+                    String searchFilename = this.getFileNameFromSearchQuery(incomingMessage);
 
-                    filename = filename.replace("\"", "");
-
-                    String fileSearchResults = searchInFileList(fileList, filename);
+                    String fileSearchResults = searchInFileList(searchFilename);
                     String responseString = "";
 
                     if (fileSearchResults == "FALSE") {
-                        if (peers.size() > 0) {
-                            Node.sendSearchQuery(filename, peers, incomingMessage, nodeIp, port);
+                        if (node.getRoutingTable().size() > 0) {
+                            node.sendSearchQuery(searchFilename, incomingMessage);
                         }
-
                     } else {
-
-                        log(Node.INFO, response[2]);
-                        log(Node.INFO, response[3]);
                         responseAddress = InetAddress.getByName(response[2]);
                         responsePort = Integer.parseInt(response[3]);
 
-                        responseString = " SEROK " + nodeIp + " " + port + " " + fileSearchResults;
-                        responseString = String.format("%04d", responseString.length() + 4) + responseString;
-
-
+                        responseString =  node.prependTheLengthToMessage("SEROK " + node.getNodeIp() + " " + node.getNodePort() + " " + fileSearchResults);
                     }
                     sendData  = responseString.getBytes();
 
                 } else if (response.length >= 4 && Node.JOIN.equals(response[1])) {
-                    log(Node.INFO, "JOIN QUERY RECEIVED : " + incomingMessage);
-                    sendData = "0014 JOINOK 0".getBytes();
+                    node.log(Node.INFO, "JOIN QUERY RECEIVED : " + incomingMessage);
+                    sendData = node.prependTheLengthToMessage("JOINOK 0").getBytes();
                 } else if (response.length >= 4 && Node.SEROK.equals(response[1])) {
-                    log(Node.INFO, "SEARCH RESULTS RECEIVED : " + incomingMessage);
+                    node.log(Node.INFO, "SEARCH RESULTS RECEIVED : " + incomingMessage);
                 }
 
                 if (sendData != null) {
-                    log(Node.INFO,"Came untill where I want");
                     DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, responseAddress,
                             responsePort);
                     serverSocket.send(sendPacket);
                 }
             }
         } catch (IOException e) {
-            log(Node.ERROR, e);
+            node.log(Node.ERROR, e);
             e.printStackTrace();;
         }
     }
-
-    private static void log(String level, Object msg) {
-        System.out.println(level + " : " + msg.toString());
-    }
-
 }
