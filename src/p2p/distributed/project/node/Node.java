@@ -4,8 +4,14 @@ import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
-import java.util.*;
-import java.net.NetworkInterface;
+import java.net.UnknownHostException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Random;
+import java.util.Scanner;
+
+import static p2p.distributed.project.node.Node.log;
 
 public class Node {
     public static final String REG_OK = "REGOK";
@@ -21,13 +27,20 @@ public class Node {
     private List<Peer> routingTable = new ArrayList<>();
     private String[] fileList;
 
-    private String bootstrapIp = "192.168.8.101";
-    private int bootstrapPort = 55555;
-    private String nodeIp = "";
-    private int nodePort = 11004;
-    private String nodeName = "node4";
+    private String bootstrapIp;
+    private int bootstrapPort;
+    private String nodeName;
+    private String nodeIp;
+    private int nodePort;
     private List<String> recievedSearchQueryList = new ArrayList<>();
 
+    public Node(String bootstrapIp, int bootstrapPort, String nodeName, String nodeIp, int nodePort) {
+        this.bootstrapIp = bootstrapIp;
+        this.bootstrapPort = bootstrapPort;
+        this.nodeName = nodeName;
+        this.nodeIp = nodeIp;
+        this.nodePort = nodePort;
+    }
 
     public String getBootstrapIp() {
         return this.bootstrapIp;
@@ -62,17 +75,25 @@ public class Node {
         log(INFO, this.routingTable);
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws UnknownHostException {
 
+        String bootstrapIp = "localhost";
+        int bootstrapPort = 55555;
 
-        Node node = new Node();
-        node.assignTheNodeIpAddress();
-        node.fileList = node.assignFiles();
+        String nodeIp = InetAddress.getLocalHost().getHostAddress();
+        int nodePort = 11001;
+        String nodeName = "node1";
 
-        List<Peer> peersToConnect = node.connectToBootstrapNode(node.bootstrapIp, node.bootstrapPort, node.nodeIp, node.nodePort, node.nodeName);
+        Node node = new Node(bootstrapIp, bootstrapPort, nodeName, nodeIp, nodePort);
+
+        log(INFO, "This node : " + nodeIp + ":" + nodePort);
+
+        node.assignFiles();
+
+        List<Peer> peersToConnect = node.connectToBootstrapNode();
 
         //1. connect to bootstrap and get peers
-        node.log(INFO, "Peers : " + peersToConnect);
+        log(INFO, "Peers : " + peersToConnect);
 
         //2. connect to peers from above
         node.connectToPeers(peersToConnect, node.nodeIp, node.nodePort);
@@ -85,16 +106,7 @@ public class Node {
         node.startListeningForSearchQueries();
     }
 
-    private void assignTheNodeIpAddress() {
-        try {
-            DatagramSocket socket = new DatagramSocket();
-            socket.connect(InetAddress.getByName("8.8.8.8"), 10002);
-            this.nodeIp = socket.getLocalAddress().getHostAddress();
-        } catch (IOException e) {
-        }
-    }
-
-    private String[] assignFiles() {
+    private void assignFiles() {
         String[] fileList = {
                 "Adventures of Tintin",
                 "Jack and Jill",
@@ -121,20 +133,19 @@ public class Node {
         Random random = new Random();
 
         String[] subFileList = new String[5];
-        System.out.println("**** Assigned File Names ****");
+        log(INFO, "This node file list : ");
         for (int i = 0; i < 5; i++) {
-            int randIndex = random.nextInt(fileList.length-1);
+            int randIndex = random.nextInt(fileList.length - 1);
 
             if (!Arrays.asList(subFileList).contains(fileList[randIndex])) {
                 subFileList[i] = fileList[randIndex];
-                System.out.println(subFileList[i]);
+                System.out.println("\t\t" + subFileList[i]);
             } else {
                 i--;
             }
         }
-        System.out.println("*****************************\n");
 
-        return subFileList;
+        this.fileList = subFileList;
     }
 
     private void startListeningForSearchQueries() {
@@ -142,11 +153,11 @@ public class Node {
         Scanner in = new Scanner(System.in);
 
         while (true) {
-            System.out.println("Enter a file name as the search string");
+            System.out.println("Enter a file name as the search string : ");
             fileName = in.nextLine();
-            System.out.println("File Name: " + fileName);
+            System.out.println("File name : " + fileName);
 
-            this.sendSearchQuery(fileName, "");
+            sendSearchQuery(fileName, "");
         }
     }
 
@@ -158,13 +169,22 @@ public class Node {
     public void sendSearchQuery(String fileName, String searchQuery) {
         DatagramSocket clientSocket = null;
 
+        //search its own list first
+        String searchedFile = searchInFileList(fileName);
+
+        if (!searchedFile.isEmpty()) {
+            log(INFO, "Searched file '" + searchedFile + "' is in current node '" +
+                    this.nodeIp + ":" + this.nodePort + "'");
+            return;
+        }
+
         try {
             for (Peer peer : this.routingTable) {
+                String message;
 
-                String message = "";
-
-                if (searchQuery == "") {
-                    message = this.prependTheLengthToMessage("SER " + this.nodeIp + " " + this.nodePort + " \"" + fileName + "\"");
+                if (searchQuery.isEmpty()) {
+                    message = this.prependTheLengthToMessage("SER " + this.nodeIp + " " +
+                            this.nodePort + " \"" + fileName + "\"");
                 } else {
                     if (this.recievedSearchQueryList.contains(searchQuery)) {
                         break;
@@ -172,7 +192,7 @@ public class Node {
                         this.recievedSearchQueryList.add(searchQuery);
                     }
 
-                    if (this.getSenderIpFromSearchQuery(searchQuery) == peer.getIp()) {
+                    if (!peer.getIp().isEmpty() && peer.getIp().equals(this.getSenderIpFromSearchQuery(searchQuery))) {
                         continue;
                     }
                     message = searchQuery;
@@ -181,7 +201,6 @@ public class Node {
                 InetAddress address = InetAddress.getByName(peer.getIp());
                 clientSocket = new DatagramSocket();
                 byte[] receiveData = new byte[1024];
-
 
 
                 byte[] sendData = message.getBytes();
@@ -196,6 +215,10 @@ public class Node {
         } catch (IOException e) {
             log(ERROR, e);
             e.printStackTrace();
+        } finally {
+            if (clientSocket != null) {
+                clientSocket.close();
+            }
         }
     }
 
@@ -226,6 +249,10 @@ public class Node {
         } catch (IOException e) {
             log(ERROR, e);
             e.printStackTrace();
+        } finally {
+            if (clientSocket != null) {
+                clientSocket.close();
+            }
         }
     }
 
@@ -233,7 +260,7 @@ public class Node {
         return String.format("%04d", message.length() + 5) + " " + message;
     }
 
-    private List<Peer> connectToBootstrapNode(String bootstrapIp,  int bootstrapPort, String nodeIp, int nodePort, String nodeName) {
+    private List<Peer> connectToBootstrapNode() {
         List<Peer> peers = new ArrayList<>();
         DatagramSocket clientSocket = null;
 
@@ -279,8 +306,20 @@ public class Node {
         return peers;
     }
 
-    public void log(String level, Object msg) {
+    public static void log(String level, Object msg) {
         System.out.println(level + " : " + msg.toString());
+    }
+
+    public String searchInFileList(String fileName) {
+        String queriedFile = "";
+
+        for (String file : fileList) {
+            if (file.contains(fileName)) {
+                queriedFile = file;
+                break;
+            }
+        }
+        return queriedFile;
     }
 }
 
@@ -288,34 +327,15 @@ class NodeThread extends Thread {
 
     Node node;
 
-    NodeThread(Node node) { this.node = node;}
-
-    private String searchInFileList(String fileName) {
-
-        String[] fileList = node.getFileList();
-
-        /*String matchingFileNames = "";
-
-        for (int i = 0; i < 5; i++) {
-            log(Node.INFO, fileList[i]);
-            if (fileName == fileList[i]) {
-                matchingFileNames = ""
-            }
-
-        }*/
-
-        if (Arrays.asList(fileList).contains(fileName)) {
-            return fileName;
-        } else {
-            return "FALSE";
-        }
+    NodeThread(Node node) {
+        this.node = node;
     }
 
     private String getFileNameFromSearchQuery(String query) {
         String[] response = query.split(" ");
 
         String filename = response[4];
-        for (int i = 5; i <= response.length-1; i++) {
+        for (int i = 5; i <= response.length - 1; i++) {
             filename += " " + response[i];
         }
 
@@ -326,7 +346,7 @@ class NodeThread extends Thread {
         DatagramSocket serverSocket;
         try {
             serverSocket = new DatagramSocket(node.getNodePort());
-            node.log(Node.INFO, "Started listening on '" + node.getNodePort() + "' for incoming data...");
+            log(Node.INFO, "Started listening on '" + node.getNodePort() + "' for incoming data...");
 
             while (true) {
                 byte[] buffer = new byte[65536];
@@ -343,31 +363,32 @@ class NodeThread extends Thread {
                 int responsePort = incoming.getPort();
 
                 if (response.length >= 5 && Node.SER.equals(response[1])) {
-                    node.log(Node.INFO, "SEARCH QUERY RECEIVED : " + incomingMessage);
+                    log(Node.INFO, "SEARCH QUERY RECEIVED : " + incomingMessage);
 
                     String searchFilename = this.getFileNameFromSearchQuery(incomingMessage);
 
-                    String fileSearchResults = searchInFileList(searchFilename);
+                    String fileSearchResults = node.searchInFileList(searchFilename);
                     String responseString = "";
 
-                    if (fileSearchResults == "FALSE") {
+                    if (fileSearchResults.isEmpty()) {
                         if (node.getRoutingTable().size() > 0) {
                             node.sendSearchQuery(searchFilename, incomingMessage);
                         }
                     } else {
-                        responseAddress = InetAddress.getByName(response[2]);
-                        responsePort = Integer.parseInt(response[3]);
+//                        responseAddress = InetAddress.getByName(response[2]);
+//                        responsePort = Integer.parseInt(response[3]);
 
-                        responseString =  node.prependTheLengthToMessage("SEROK " + node.getNodeIp() + " " + node.getNodePort() + " " + fileSearchResults);
+                        responseString = node.prependTheLengthToMessage("SEROK " + node.getNodeIp() + " "
+                                + node.getNodePort() + " " + fileSearchResults);
                     }
-                    sendData  = responseString.getBytes();
+                    sendData = responseString.getBytes();
 
                 } else if (response.length >= 4 && Node.JOIN.equals(response[1])) {
-                    node.log(Node.INFO, "JOIN QUERY RECEIVED : " + incomingMessage);
+                    log(Node.INFO, "JOIN QUERY RECEIVED : " + incomingMessage);
                     sendData = node.prependTheLengthToMessage("JOINOK 0").getBytes();
                     node.addToRoutingTable(new Peer(responseAddress.getHostAddress(), Integer.parseInt(response[3])));
                 } else if (response.length >= 4 && Node.SEROK.equals(response[1])) {
-                    node.log(Node.INFO, "SEARCH RESULTS RECEIVED : " + incomingMessage);
+                    log(Node.INFO, "SEARCH RESULTS RECEIVED : " + incomingMessage);
                 }
 
                 if (sendData != null) {
@@ -377,8 +398,8 @@ class NodeThread extends Thread {
                 }
             }
         } catch (IOException e) {
-            node.log(Node.ERROR, e);
-            e.printStackTrace();;
+            log(Node.ERROR, e);
+            e.printStackTrace();
         }
     }
 }
