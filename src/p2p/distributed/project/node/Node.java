@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.Scanner;
 
+import static p2p.distributed.project.node.Node.INFO;
 import static p2p.distributed.project.node.Node.log;
 
 public class Node {
@@ -26,13 +27,14 @@ public class Node {
 
     private List<Peer> routingTable = new ArrayList<>();
     private String[] fileList;
+    private List<FileMetaData> fileMetaDataList = new ArrayList<>();
 
     private String bootstrapIp;
     private int bootstrapPort;
     private String nodeName;
     private String nodeIp;
     private int nodePort;
-    private List<String> recievedSearchQueryList = new ArrayList<>();
+    private List<String> receivedSearchQueryList = new ArrayList<>();
 
     public Node(String bootstrapIp, int bootstrapPort, String nodeName, String nodeIp, int nodePort) {
         this.bootstrapIp = bootstrapIp;
@@ -81,8 +83,8 @@ public class Node {
         int bootstrapPort = 55555;
 
         String nodeIp = InetAddress.getLocalHost().getHostAddress();
-        int nodePort = 11001;
-        String nodeName = "node1";
+        int nodePort = 11004;
+        String nodeName = "node4";
 
         Node node = new Node(bootstrapIp, bootstrapPort, nodeName, nodeIp, nodePort);
 
@@ -150,6 +152,7 @@ public class Node {
 
     private void startListeningForSearchQueries() {
         String fileName;
+        String responseMessage = null;
         Scanner in = new Scanner(System.in);
 
         while (true) {
@@ -157,17 +160,27 @@ public class Node {
             fileName = in.nextLine();
             System.out.println("File name : " + fileName);
 
-            sendSearchQuery(fileName, "");
+            responseMessage = sendSearchQuery(fileName, "");
+
+            log(INFO, "Search query results from client : " + responseMessage);
         }
     }
 
-    private String getSenderIpFromSearchQuery(String searchQuery) {
+    private String getSenderAddressFromSearchQuery(String searchQuery) {
         String[] query = searchQuery.split(" ");
-        return query[2];
+        return query[2] + ":" + query[3];
     }
 
-    public void sendSearchQuery(String fileName, String searchQuery) {
+    public String sendSearchQuery(String fileName, String searchQuery) {
         DatagramSocket clientSocket = null;
+        String responseMessage = "";
+
+        if (this.receivedSearchQueryList.contains(searchQuery)) {
+            log(INFO, "Query already received '" + searchQuery + "'");
+            return responseMessage;
+        } else if (!searchQuery.isEmpty()) {
+            this.receivedSearchQueryList.add(searchQuery);
+        }
 
         //search its own list first
         String searchedFile = searchInFileList(fileName);
@@ -175,7 +188,7 @@ public class Node {
         if (!searchedFile.isEmpty()) {
             log(INFO, "Searched file '" + searchedFile + "' is in current node '" +
                     this.nodeIp + ":" + this.nodePort + "'");
-            return;
+            return responseMessage;
         }
 
         try {
@@ -186,17 +199,14 @@ public class Node {
                     message = this.prependTheLengthToMessage("SER " + this.nodeIp + " " +
                             this.nodePort + " \"" + fileName + "\"");
                 } else {
-                    if (this.recievedSearchQueryList.contains(searchQuery)) {
-                        break;
-                    } else {
-                        this.recievedSearchQueryList.add(searchQuery);
-                    }
-
-                    if (!peer.getIp().isEmpty() && peer.getIp().equals(this.getSenderIpFromSearchQuery(searchQuery))) {
+                    String peerAddress = peer.getIp() + ":" + peer.getPort();
+                    if (peerAddress.equals(getSenderAddressFromSearchQuery(searchQuery))) {
                         continue;
                     }
                     message = searchQuery;
                 }
+
+                this.receivedSearchQueryList.add(message);
 
                 InetAddress address = InetAddress.getByName(peer.getIp());
                 clientSocket = new DatagramSocket();
@@ -205,12 +215,19 @@ public class Node {
 
                 byte[] sendData = message.getBytes();
                 DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, address, peer.getPort());
+                log(INFO, "Sending search query '" + message + "' to '" + peer);
                 clientSocket.send(sendPacket);
                 DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
                 clientSocket.receive(receivePacket);
-                String responseMessage = new String(receivePacket.getData()).trim();
-
-                log(INFO, responseMessage);
+                responseMessage = new String(receivePacket.getData()).trim();
+                log(INFO, "Received search query response for '" + message + "' from '" + peer + "' as : " +
+                        responseMessage);
+                String[] parsedResponse = parseResponse(responseMessage);
+                if (parsedResponse.length >= 4 && Node.SEROK.equals(parsedResponse[1])) {
+                    FileMetaData fileMetaData = new FileMetaData(new Peer(parsedResponse[2],
+                            Integer.parseInt(parsedResponse[3])), parsedResponse[4]);
+                    fileMetaDataList.add(fileMetaData);
+                }
             }
         } catch (IOException e) {
             log(ERROR, e);
@@ -220,6 +237,12 @@ public class Node {
                 clientSocket.close();
             }
         }
+
+        return responseMessage;
+    }
+
+    private String[] parseResponse(String responseMessage) {
+        return responseMessage.split(" ");
     }
 
     private void connectToPeers(List<Peer> peersToConnect, String nodeIp, int nodePort) {
@@ -363,7 +386,8 @@ class NodeThread extends Thread {
                 int responsePort = incoming.getPort();
 
                 if (response.length >= 5 && Node.SER.equals(response[1])) {
-                    log(Node.INFO, "SEARCH QUERY RECEIVED : " + incomingMessage);
+                    log(Node.INFO, "SEARCH QUERY RECEIVED FROM '" + responseAddress + ":" + responsePort + "': " +
+                            incomingMessage);
 
                     String searchFilename = this.getFileNameFromSearchQuery(incomingMessage);
 
@@ -372,7 +396,8 @@ class NodeThread extends Thread {
 
                     if (fileSearchResults.isEmpty()) {
                         if (node.getRoutingTable().size() > 0) {
-                            node.sendSearchQuery(searchFilename, incomingMessage);
+                            responseString = node.sendSearchQuery(searchFilename, incomingMessage);
+                            log(INFO, "Search query results from remote : " + responseString);
                         }
                     } else {
 //                        responseAddress = InetAddress.getByName(response[2]);
@@ -380,6 +405,7 @@ class NodeThread extends Thread {
 
                         responseString = node.prependTheLengthToMessage("SEROK " + node.getNodeIp() + " "
                                 + node.getNodePort() + " " + fileSearchResults);
+                        log(INFO, "Search query results from local : " + responseString);
                     }
                     sendData = responseString.getBytes();
 
