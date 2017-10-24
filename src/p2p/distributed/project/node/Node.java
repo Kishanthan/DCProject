@@ -79,10 +79,10 @@ public class Node {
 
     public static void main(String[] args) throws UnknownHostException {
 
-        String bootstrapIp = "localhost";
+        String bootstrapIp = "192.168.8.100";
         int bootstrapPort = 55555;
 
-        String nodeIp = InetAddress.getLocalHost().getHostAddress();
+        String nodeIp = getNodeIpAddress();
         int nodePort = 11004;
         String nodeName = "node4";
 
@@ -107,6 +107,18 @@ public class Node {
         //4. start listening to incoming search queries
         node.startListeningForSearchQueries();
     }
+
+    private static String getNodeIpAddress() {
+        String nodeIp = "";
+        try {
+            DatagramSocket socket = new DatagramSocket();
+            socket.connect(InetAddress.getByName("8.8.8.8"), 10002);
+            nodeIp = socket.getLocalAddress().getHostAddress();
+        } catch (IOException e) {
+        }
+        return nodeIp;
+    }
+
 
     private void assignFiles() {
         String[] fileList = {
@@ -194,7 +206,6 @@ public class Node {
         try {
             for (Peer peer : this.routingTable) {
                 String message;
-
                 if (searchQuery.isEmpty()) {
                     message = this.prependTheLengthToMessage("SER " + this.nodeIp + " " +
                             this.nodePort + " \"" + fileName + "\"");
@@ -217,7 +228,8 @@ public class Node {
                 DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, address, peer.getPort());
                 log(INFO, "Sending search query '" + message + "' to '" + peer);
                 clientSocket.send(sendPacket);
-                DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
+                clientSocket.close();
+                /*DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
                 clientSocket.receive(receivePacket);
                 responseMessage = new String(receivePacket.getData()).trim();
                 log(INFO, "Received search query response for '" + message + "' from '" + peer + "' as : " +
@@ -227,7 +239,7 @@ public class Node {
                     FileMetaData fileMetaData = new FileMetaData(new Peer(parsedResponse[2],
                             Integer.parseInt(parsedResponse[3])), parsedResponse[4]);
                     fileMetaDataList.add(fileMetaData);
-                }
+                }*/
             }
         } catch (IOException e) {
             log(ERROR, e);
@@ -405,6 +417,9 @@ class NodeThread extends Thread {
 
                         responseString = node.prependTheLengthToMessage("SEROK " + node.getNodeIp() + " "
                                 + node.getNodePort() + " " + fileSearchResults);
+
+                        sendTheResultToOriginalNode(response[2], Integer.parseInt(response[3]), responseString);
+
                         log(INFO, "Search query results from local : " + responseString);
                     }
                     sendData = responseString.getBytes();
@@ -423,6 +438,27 @@ class NodeThread extends Thread {
                     serverSocket.send(sendPacket);
                 }
             }
+        } catch (IOException e) {
+            log(Node.ERROR, e);
+            e.printStackTrace();
+        }
+    }
+
+    private void sendTheResultToOriginalNode(String responseIp, int responsePort, String message) {
+        DatagramSocket serverSocket;
+        try {
+            serverSocket = new DatagramSocket();
+
+            byte[] buffer = new byte[65536];
+            DatagramPacket incoming = new DatagramPacket(buffer, buffer.length);
+
+            InetAddress responseAddress = InetAddress.getByName(responseIp);
+
+            byte[] sendData = message.getBytes();
+
+            DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, responseAddress, responsePort);
+            serverSocket.send(sendPacket);
+            serverSocket.close();
         } catch (IOException e) {
             log(Node.ERROR, e);
             e.printStackTrace();
