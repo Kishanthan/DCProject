@@ -11,8 +11,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.Scanner;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static p2p.distributed.project.node.Node.INFO;
 import static p2p.distributed.project.node.Node.log;
@@ -29,6 +31,8 @@ public class Node {
     public static final String SEROK = "SEROK";
     public static final String LEAVE = "LEAVE";
 
+    public static final int default_hops_count = 2;
+
 
     private List<Peer> routingTable = new ArrayList<>();
     private List<Peer> peers = new ArrayList<>();
@@ -40,7 +44,9 @@ public class Node {
     private String nodeName;
     private String nodeIp;
     private int nodePort;
-    private List<String> receivedSearchQueryList = new ArrayList<>();
+    private Map<String, Long> receivedSearchQueryMap = new ConcurrentHashMap<>();
+
+    private Map<String, Integer> sentSearchQueryMap = new ConcurrentHashMap<>();
 
     public Node(String bootstrapIp, int bootstrapPort, String nodeName, String nodeIp, int nodePort) {
         this.bootstrapIp = bootstrapIp;
@@ -96,8 +102,8 @@ public class Node {
         int bootstrapPort = 55555;
 
         String nodeIp = getNodeIpAddress();
-        int nodePort = 11003;
-        String nodeName = "node3";
+        int nodePort = 11006;
+        String nodeName = "node6";
 
         Node node = new Node(bootstrapIp, bootstrapPort, nodeName, nodeIp, nodePort);
 
@@ -152,7 +158,6 @@ public class Node {
     private static boolean isIP(String hostAddress) {
         return hostAddress.split("[.]").length == 4;
     }
-
 
     private void assignFiles() {
         String[] fileList = {
@@ -215,13 +220,18 @@ public class Node {
             String searchedFile = searchInFileList(fileName);
 
             if (!searchedFile.isEmpty()) {
-                log(INFO, "Searched file '" + searchedFile + "' is in current node '" +
-                        this.nodeIp + ":" + this.nodePort + "'");
+                log(INFO, "FOUND: Searched file '" + searchedFile + "' is already in current node '" +
+                        nodeIp + ":" + nodePort + "'");
             } else {
-                sendSearchQuery(fileName, "");
-
+                String searchQuery = constructSearchQuery(nodeIp, nodePort, fileName, default_hops_count);
+                addToSentSearchQueryMap(nodeIp + " " + nodePort + " " + fileName, default_hops_count);
+                sendSearchQuery(searchQuery);
             }
         }
+    }
+
+    public String constructSearchQuery(String ip, int port, String fileName, int hopsCount) {
+        return prependTheLengthToMessage("SER " + ip + " " + port + " \"" + fileName + "\" " + hopsCount);
     }
 
     private void sendUnRegMessageToBootstrap() {
@@ -285,38 +295,21 @@ public class Node {
         return query[2] + ":" + query[3];
     }
 
-    public void sendSearchQuery(String fileName, String searchQuery) {
+    public void sendSearchQuery(String searchQuery) {
         DatagramSocket clientSocket = null;
 
-        if (this.receivedSearchQueryList.contains(searchQuery)) {
-            log(INFO, "Query already received '" + searchQuery + "'");
-            return;
-        } else if (!searchQuery.isEmpty()) {
-            this.receivedSearchQueryList.add(searchQuery);
-        }
-
         try {
-            for (Peer peer : this.routingTable) {
-                String message;
-                if (searchQuery.isEmpty()) {
-                    message = this.prependTheLengthToMessage("SER " + this.nodeIp + " " +
-                            this.nodePort + " \"" + fileName + "\"");
-                } else {
-                    String peerAddress = peer.getIp() + ":" + peer.getPort();
-                    if (peerAddress.equals(getSenderAddressFromSearchQuery(searchQuery))) {
-                        continue;
-                    }
-                    message = searchQuery;
+            for (Peer peer : routingTable) {
+                String peerAddress = peer.getIp() + ":" + peer.getPort();
+                if (peerAddress.equals(getSenderAddressFromSearchQuery(searchQuery))) {
+                    continue;
                 }
-
-                this.receivedSearchQueryList.add(message);
-
                 InetAddress address = InetAddress.getByName(peer.getIp());
                 clientSocket = new DatagramSocket();
 
-                byte[] sendData = message.getBytes();
+                byte[] sendData = searchQuery.getBytes();
                 DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, address, peer.getPort());
-                log(INFO, "SEND: Sending search query '" + message + "' to '" + peer + "'");
+                log(INFO, "SEND: Sending search query '" + searchQuery + "' to '" + peer + "'");
                 clientSocket.send(sendPacket);
             }
         } catch (IOException e) {
@@ -329,6 +322,17 @@ public class Node {
         }
     }
 
+    public void addToReceivedQueryMap(String searchQuery, long timestamp) {
+        receivedSearchQueryMap.put(searchQuery, timestamp);
+    }
+
+    public void removeFromReceivedQueryMap(String searchQuery) {
+        receivedSearchQueryMap.remove(searchQuery);
+    }
+
+    public Map<String, Long> getReceivedSearchQueryMap() {
+        return receivedSearchQueryMap;
+    }
 
     private void connectToPeers(List<Peer> peersToConnect, String nodeIp, int nodePort) {
         DatagramSocket clientSocket = null;
@@ -432,6 +436,22 @@ public class Node {
         }
         return queriedFile;
     }
+
+    public Map<String, Integer> getSentSearchQueryMap() {
+        return sentSearchQueryMap;
+    }
+
+    public void addToSentSearchQueryMap(String query, int hops) {
+        sentSearchQueryMap.put(query, hops);
+    }
+
+    public void removeFromSentSearchQueryMap(String query) {
+        sentSearchQueryMap.remove(query);
+    }
+
+    public void updateSentSearchQueryMap(String query, int hops) {
+        sentSearchQueryMap.replace(query, hops);
+    }
 }
 
 class NodeThread extends Thread {
@@ -443,14 +463,15 @@ class NodeThread extends Thread {
     }
 
     private String getFileNameFromSearchQuery(String query) {
-        String[] response = query.split(" ");
-
-        String filename = response[4];
-        for (int i = 5; i <= response.length - 1; i++) {
-            filename += " " + response[i];
-        }
-
-        return filename.replace("\"", "");
+//        String[] response = query.split(" ");
+//
+//        String filename = response[4];
+//        for (int i = 5; i <= response.length - 1; i++) {
+//            filename += " " + response[i];
+//        }
+//
+//        return filename.replace("\"", "");
+        return query.trim().replaceAll("\"", "");
     }
 
     public void run() {
@@ -467,29 +488,56 @@ class NodeThread extends Thread {
                 byte[] data = incoming.getData();
                 String incomingMessage = new String(data, 0, incoming.getLength());
 
+                //incomingMessage = 0047 SER 129.82.62.142 5070 "Lord of the rings" 3
+
                 String[] response = incomingMessage.split(" ");
                 byte[] sendData = null;
 
                 InetAddress responseAddress = incoming.getAddress();
                 int responsePort = incoming.getPort();
 
-                if (response.length >= 5 && Node.SER.equals(response[1])) {
+                if (response.length >= 6 && Node.SER.equals(response[1])) {
                     log(Node.INFO, "RECEIVE: Search query received from '" + responseAddress + ":" +
-                            responsePort + "': " + incomingMessage);
+                            responsePort + "' as '" + incomingMessage + "'");
 
-                    String searchFilename = this.getFileNameFromSearchQuery(incomingMessage);
+                    String searchFilename = this.getFileNameFromSearchQuery(response[4]);
 
                     String fileSearchResults = node.searchInFileList(searchFilename);
                     String responseString = "";
 
                     if (fileSearchResults.isEmpty()) {
                         if (node.getRoutingTable().size() > 0) {
-                            node.sendSearchQuery(searchFilename, incomingMessage);
+                            String searchQueryWithoutHops = response[2] + ":" + response[3] + ":" + searchFilename;
+
+                            if (node.getReceivedSearchQueryMap().keySet().contains(searchQueryWithoutHops)) {
+                                long timeInterval = System.currentTimeMillis() -
+                                        node.getReceivedSearchQueryMap().get(searchQueryWithoutHops);
+                                if (timeInterval < 2000) {
+                                    log(INFO, "DROP: Query already received within " + (timeInterval / 1000) + " sec, " +
+                                            "hence dropping '" + incomingMessage + "'");
+                                    continue;
+                                }
+                                node.removeFromReceivedQueryMap(searchQueryWithoutHops);
+                            }
+
+                            int currentHopsCount = Integer.parseInt(response[5]);
+                            log(INFO, "Current hops count for '" + incomingMessage + "' is : " + currentHopsCount);
+                            if (currentHopsCount == 0) {
+                                log(INFO, "DROP: Maximum hops reached hence dropping '" + incomingMessage + "'");
+                                continue;
+                            }
+
+                            String updatedSearchQuery = node.constructSearchQuery(response[2],
+                                    Integer.parseInt(response[3]), searchFilename, currentHopsCount - 1);
+
+                            if (!updatedSearchQuery.isEmpty()) {
+                                node.addToReceivedQueryMap(searchQueryWithoutHops, System.currentTimeMillis());
+                            }
+                            node.sendSearchQuery(updatedSearchQuery);
                         }
                     } else {
-
                         responseString = node.prependTheLengthToMessage("SEROK " + node.getNodeIp() + " "
-                                + node.getNodePort() + " " + fileSearchResults);
+                                + node.getNodePort() + " \"" + fileSearchResults + "\" " + Integer.parseInt(response[5]));
 
                         log(INFO, "FOUND: File found locally : " + responseString);
 
@@ -511,6 +559,10 @@ class NodeThread extends Thread {
                 } else if (response.length >= 4 && Node.SEROK.equals(response[1])) {
                     log(Node.INFO, "RECEIVE: Search results received from '" + responseAddress + ":" + responsePort +
                             "' as '" + incomingMessage + "'");
+                    // 0041 SEROK 192.168.1.2 11003 Windows XP 2
+//                    String searchQueryId = response[2] + " " + response[3] + " " + response[4];
+//                    int currentHopCount = Integer.parseInt(response[5]);
+//                    checkForBestResult(node, searchQueryId, currentHopCount);
                 }
 
                 if (sendData != null) {
@@ -523,6 +575,19 @@ class NodeThread extends Thread {
             log(Node.ERROR, e);
             e.printStackTrace();
         }
+    }
+
+    private boolean checkForBestResult(Node node, String incomingMessage, int hops) {
+        if (node.getSentSearchQueryMap().keySet().contains(incomingMessage) &&
+                node.getSentSearchQueryMap().get(incomingMessage) > hops) {
+            log(Node.INFO, "RECEIVE: Best result with less number of hops received '" +
+                    incomingMessage + "'");
+            node.updateSentSearchQueryMap(incomingMessage, hops);
+            return true;
+        }
+        log(Node.INFO, "IGNORE: Number of hops '" + hops + "' exceeds the current best result '" +
+                node.getSentSearchQueryMap().get(incomingMessage) + " for '" + incomingMessage + "'");
+        return false;
     }
 
     private void sendTheResultToOriginalNode(String responseIp, int responsePort, String message) {
