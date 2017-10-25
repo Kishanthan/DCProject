@@ -16,6 +16,7 @@ import static p2p.distributed.project.node.Node.log;
 
 public class Node {
     public static final String REG_OK = "REGOK";
+    public static final String UN_ROK = "UNROK";
     public static final String INFO = "INFO";
     public static final String WARN = "WARN";
     public static final String ERROR = "ERROR";
@@ -23,9 +24,11 @@ public class Node {
     public static final String SER = "SER";
     public static final String JOIN = "JOIN";
     public static final String SEROK = "SEROK";
+    public static final String LEAVE = "LEAVE";
 
 
     private List<Peer> routingTable = new ArrayList<>();
+    private List<Peer> peers = new ArrayList<>();
     private String[] fileList;
     private List<FileMetaData> fileMetaDataList = new ArrayList<>();
 
@@ -73,8 +76,15 @@ public class Node {
     }
 
     public void addToRoutingTable(Peer peer) {
-        this.routingTable.add(peer);
-        log(INFO, "UPDATE: Routing table : " + this.routingTable);
+        if (!routingTable.contains(peer)) {
+            routingTable.add(peer);
+        }
+        log(INFO, "UPDATE: Routing table : " + routingTable);
+    }
+
+    public void removeFromRoutingTable(Peer peer) {
+        routingTable.remove(peer);
+        log(INFO, "UPDATE: Routing table : " + routingTable);
     }
 
     public static void main(String[] args) throws UnknownHostException {
@@ -83,8 +93,8 @@ public class Node {
         int bootstrapPort = 55555;
 
         String nodeIp = getNodeIpAddress();
-        int nodePort = 11002;
-        String nodeName = "node2";
+        int nodePort = 11003;
+        String nodeName = "node3";
 
         Node node = new Node(bootstrapIp, bootstrapPort, nodeName, nodeIp, nodePort);
 
@@ -106,6 +116,7 @@ public class Node {
 
         //4. start listening to incoming search queries
         node.startListeningForSearchQueries();
+        System.exit(0);
     }
 
     private static String getNodeIpAddress() {
@@ -171,6 +182,13 @@ public class Node {
         while (true) {
             log(INFO, "Enter a file name as the search string : ");
             fileName = in.nextLine();
+
+            if (LEAVE.toLowerCase().equals(fileName.toLowerCase())) {
+                sendLeaveMessageToPeers();
+                sendUnRegMessageToBootstrap();
+                break;
+            }
+
             log(DEBUG, "File name : " + fileName);
             //search its own list first
             String searchedFile = searchInFileList(fileName);
@@ -180,6 +198,63 @@ public class Node {
                         this.nodeIp + ":" + this.nodePort + "'");
             } else {
                 sendSearchQuery(fileName, "");
+
+            }
+        }
+    }
+
+    private void sendUnRegMessageToBootstrap() {
+        DatagramSocket clientSocket = null;
+        try {
+            InetAddress bootstrapHost = InetAddress.getByName(bootstrapIp);
+            clientSocket = new DatagramSocket();
+            byte[] receiveData = new byte[1024];
+            String message = this.prependTheLengthToMessage("UNREG " + nodeIp + " " + nodePort + " " + nodeName);
+            byte[] sendData = message.getBytes();
+
+            DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, bootstrapHost, bootstrapPort);
+            log(INFO, "SEND: Bootstrap server un-register message '" + message + "'");
+            clientSocket.send(sendPacket);
+            DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
+            clientSocket.receive(receivePacket);
+
+            String responseMessage = new String(receivePacket.getData()).trim();
+            log(INFO, "RECEIVE: Bootstrap server response '" + responseMessage + "'");
+
+            //successful reply - 0012 UNROK 0
+        } catch (IOException e) {
+            log(ERROR, e);
+            e.printStackTrace();
+        } finally {
+            if (clientSocket != null) {
+                clientSocket.close();
+            }
+        }
+    }
+
+    private void sendLeaveMessageToPeers() {
+        DatagramSocket clientSocket = null;
+        try {
+            for (Peer peer : peers) {
+                InetAddress address = InetAddress.getByName(peer.getIp());
+                clientSocket = new DatagramSocket();
+                byte[] receiveData = new byte[1024];
+                String message = this.prependTheLengthToMessage("LEAVE " + nodeIp + " " + nodePort);
+                byte[] sendData = message.getBytes();
+                DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, address, peer.getPort());
+                log(INFO, "SEND: Leave message to '" + peer + "'");
+                clientSocket.send(sendPacket);
+                DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
+                clientSocket.receive(receivePacket);
+                String responseMessage = new String(receivePacket.getData()).trim();
+                log(INFO, "RECEIVE: " + responseMessage + " from '" + peer + "'");
+            }
+        } catch (IOException e) {
+            log(ERROR, e);
+            e.printStackTrace();
+        } finally {
+            if (clientSocket != null) {
+                clientSocket.close();
             }
         }
     }
@@ -285,13 +360,13 @@ public class Node {
             byte[] sendData = message.getBytes();
 
             DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, bootstrapHost, bootstrapPort);
-            log(INFO, "SEND: Bootstrap server join message '" + message + "'");
+            log(INFO, "SEND: Bootstrap server register message '" + message + "'");
             clientSocket.send(sendPacket);
             DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
             clientSocket.receive(receivePacket);
 
             String responseMessage = new String(receivePacket.getData()).trim();
-            log(INFO, "RECEIVE: Bootstrap server : " + responseMessage);
+            log(INFO, "RECEIVE: Bootstrap server response '" + responseMessage + "'");
 
             //unsuccessful reply - FROM SERVER:0015 REGOK 9998
             //successful reply - FROM SERVER:0050 REGOK 2 10.100.1.124 57314 10.100.1.124 56314
@@ -317,7 +392,8 @@ public class Node {
                 clientSocket.close();
             }
         }
-        return peers;
+        this.peers = peers;
+        return this.peers;
     }
 
     public static void log(String level, Object msg) {
@@ -404,8 +480,13 @@ class NodeThread extends Thread {
                 } else if (response.length >= 4 && Node.JOIN.equals(response[1])) {
                     log(Node.INFO, "RECEIVE: Join query received from '" + responseAddress + ":" + responsePort +
                             "' as '" + incomingMessage + "'");
-                    sendData = node.prependTheLengthToMessage("JOINOK 0").getBytes();
                     node.addToRoutingTable(new Peer(responseAddress.getHostAddress(), Integer.parseInt(response[3])));
+                    sendData = node.prependTheLengthToMessage("JOINOK 0").getBytes();
+                } else if (response.length >= 4 && Node.LEAVE.equals(response[1])) {
+                    log(Node.INFO, "RECEIVE: Leave query received from '" + responseAddress + ":" + responsePort +
+                            "' as '" + incomingMessage + "'");
+                    node.removeFromRoutingTable(new Peer(responseAddress.getHostAddress(), Integer.parseInt(response[3])));
+                    sendData = node.prependTheLengthToMessage("LEAVEOK 0").getBytes();
                 } else if (response.length >= 4 && Node.SEROK.equals(response[1])) {
                     log(Node.INFO, "RECEIVE: Search results received from '" + responseAddress + ":" + responsePort +
                             "' as '" + incomingMessage + "'");

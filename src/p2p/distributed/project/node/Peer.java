@@ -5,6 +5,17 @@ public class Peer {
     private int port = -1;
     private String username;
 
+    @Override
+    public boolean equals(Object obj) {
+        if (obj instanceof Peer) {
+            Peer current = (Peer) obj;
+            if (this.getIp().equals(current.getIp()) && this.getPort() == current.getPort()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public Peer(String ip, int port) {
         this.ip = ip;
         this.port = port;
