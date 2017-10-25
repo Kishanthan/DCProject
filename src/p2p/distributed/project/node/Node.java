@@ -4,9 +4,12 @@ import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Random;
 import java.util.Scanner;
@@ -120,16 +123,34 @@ public class Node {
     }
 
     private static String getNodeIpAddress() {
-        String nodeIp = "";
+        String address = "127.0.0.1";
         try {
 //            DatagramSocket socket = new DatagramSocket();
 //            socket.connect(InetAddress.getByName("8.8.8.8"), 10002);
 //            nodeIp = socket.getLocalAddress().getHostAddress();
 
-            nodeIp = InetAddress.getLocalHost().getHostAddress();
-        } catch (IOException e) {
+            Enumeration networkInterfaces = NetworkInterface.getNetworkInterfaces();
+
+            while (networkInterfaces.hasMoreElements()) {
+                NetworkInterface netface = (NetworkInterface) networkInterfaces.nextElement();
+                Enumeration addresses = netface.getInetAddresses();
+
+                while (addresses.hasMoreElements()) {
+                    InetAddress ip = (InetAddress) addresses.nextElement();
+                    if (!ip.isLoopbackAddress() && isIP(ip.getHostAddress())) {
+                        return ip.getHostAddress();
+                    }
+                }
+            }
+        } catch (SocketException e) {
+            log(ERROR, "Cannot get local ip address - " + e);
+            e.printStackTrace();
         }
-        return nodeIp;
+        return address;
+    }
+
+    private static boolean isIP(String hostAddress) {
+        return hostAddress.split("[.]").length == 4;
     }
 
 
