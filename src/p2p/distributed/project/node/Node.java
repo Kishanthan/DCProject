@@ -38,7 +38,6 @@ public class Node {
 
 
     private List<Peer> routingTable = new ArrayList<>();
-    private List<Peer> peers = new ArrayList<>();
     private String[] fileList;
     private List<FileMetaData> fileMetaDataList = new ArrayList<>();
 
@@ -105,8 +104,8 @@ public class Node {
         int bootstrapPort = 55555;
 
         String nodeIp = getNodeIpAddress();
-        int nodePort = 11014;
-        String nodeName = "node14";
+        int nodePort = 11001;
+        String nodeName = "node1";
 
         Node node = new Node(bootstrapIp, bootstrapPort, nodeName, nodeIp, nodePort);
 
@@ -269,7 +268,7 @@ public class Node {
     private void sendLeaveMessageToPeers() {
         DatagramSocket clientSocket = null;
         try {
-            for (Peer peer : peers) {
+            for (Peer peer : routingTable) {
                 InetAddress address = InetAddress.getByName(peer.getIp());
                 clientSocket = new DatagramSocket();
                 byte[] receiveData = new byte[1024];
@@ -420,8 +419,7 @@ public class Node {
                 clientSocket.close();
             }
         }
-        this.peers = peers;
-        return this.peers;
+        return peers;
     }
 
     public static void log(String level, Object msg) {
