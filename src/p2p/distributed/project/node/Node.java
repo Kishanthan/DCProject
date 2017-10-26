@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static p2p.distributed.project.node.Node.DEBUG;
 import static p2p.distributed.project.node.Node.INFO;
 import static p2p.distributed.project.node.Node.default_hops_count;
 import static p2p.distributed.project.node.Node.log;
@@ -104,8 +105,8 @@ public class Node {
         int bootstrapPort = 55555;
 
         String nodeIp = getNodeIpAddress();
-        int nodePort = 11001;
-        String nodeName = "node1";
+        int nodePort = 11005;
+        String nodeName = "node5";
 
         Node node = new Node(bootstrapIp, bootstrapPort, nodeName, nodeIp, nodePort);
 
@@ -219,14 +220,14 @@ public class Node {
 
             log(DEBUG, "File name : " + fileName);
             //search its own list first
-            String searchedFile = searchInFileList(fileName);
+            List<String> searchedFiles = searchInCurrentFileList(fileName);
 
-            if (!searchedFile.isEmpty()) {
-                log(INFO, "FOUND: Searched file '" + searchedFile + "' is already in current node '" +
-                        nodeIp + ":" + nodePort + "'");
+            if (!searchedFiles.isEmpty()) {
+                log(INFO, "FOUND: Searched file found in current node '" +
+                        nodeIp + ":" + nodePort + "' as '" + searchedFiles + "'");
             } else {
                 String searchQuery = constructSearchQuery(nodeIp, nodePort, fileName, default_hops_count);
-                addToSentSearchQueryMap(fileName, default_hops_count);
+                addToSentSearchQueryMap(fileName.toLowerCase(), default_hops_count);
                 sendSearchQuery(searchQuery);
             }
         }
@@ -426,16 +427,15 @@ public class Node {
         System.out.println(level + " : " + msg.toString());
     }
 
-    public String searchInFileList(String fileName) {
-        String queriedFile = "";
+    public List<String> searchInCurrentFileList(String fileName) {
+        List<String> queriedFileList = new ArrayList<>();
 
         for (String file : fileList) {
-            if (file.contains(fileName)) {
-                queriedFile = file;
-                break;
+            if (file.toLowerCase().matches(".*\\b" + fileName.toLowerCase() + "\\b.*")) {
+                queriedFileList.add(file);
             }
         }
-        return queriedFile;
+        return queriedFileList;
     }
 
     public Map<String, Integer> getSentSearchQueryMap() {
@@ -503,10 +503,10 @@ class NodeThread extends Thread {
 
                     String searchFilename = this.getFileNameFromSearchQuery(response[4]);
 
-                    String fileSearchResults = node.searchInFileList(searchFilename);
+                    List<String> fileSearchResultsList = node.searchInCurrentFileList(searchFilename);
                     String responseString = "";
 
-                    if (fileSearchResults.isEmpty()) {
+                    if (fileSearchResultsList.isEmpty()) {
                         if (node.getRoutingTable().size() > 0) {
                             String searchQueryWithoutHops = response[2] + ":" + response[3] + ":" + searchFilename;
 
@@ -514,7 +514,7 @@ class NodeThread extends Thread {
                                 long timeInterval = System.currentTimeMillis() -
                                         node.getReceivedSearchQueryMap().get(searchQueryWithoutHops);
                                 if (timeInterval < 2000) {
-                                    log(INFO, "DROP: Query already received within " + (timeInterval / 1000) + " sec, " +
+                                    log(DEBUG, "DROP: Query already received within " + (timeInterval / 1000) + " sec, " +
                                             "hence dropping '" + incomingMessage + "'");
                                     continue;
                                 }
@@ -522,9 +522,9 @@ class NodeThread extends Thread {
                             }
 
                             int currentHopsCount = Integer.parseInt(response[5]);
-                            log(INFO, "Current hops count for '" + incomingMessage + "' is : " + currentHopsCount);
+                            log(DEBUG, "Current hops count for '" + incomingMessage + "' is : " + currentHopsCount);
                             if (currentHopsCount == 0) {
-                                log(INFO, "DROP: Maximum hops reached hence dropping '" + incomingMessage + "'");
+                                log(DEBUG, "DROP: Maximum hops reached hence dropping '" + incomingMessage + "'");
                                 continue;
                             }
 
@@ -537,8 +537,10 @@ class NodeThread extends Thread {
                             node.sendSearchQuery(updatedSearchQuery);
                         }
                     } else {
-                        responseString = node.prependTheLengthToMessage("SEROK " + node.getNodeIp() + " "
-                                + node.getNodePort() + " \"" + fileSearchResults + "\" " + Integer.parseInt(response[5]));
+                        String fileSearchResults = String.join(" ", fileSearchResultsList);
+                        responseString = node.prependTheLengthToMessage("SEROK " + fileSearchResultsList.size() + " " +
+                                node.getNodeIp() + " " + node.getNodePort() + " \"" + fileSearchResults + "\" " +
+                                Integer.parseInt(response[5]));
 
                         log(INFO, "FOUND: File found locally : " + responseString);
 
@@ -560,9 +562,10 @@ class NodeThread extends Thread {
                 } else if (response.length >= 4 && Node.SEROK.equals(response[1])) {
                     log(Node.INFO, "RECEIVE: Search results received from '" + responseAddress + ":" + responsePort +
                             "' as '" + incomingMessage + "'");
-//                     0041 SEROK 192.168.1.2 11003 Windows XP 2
-                    int currentHopCount = Integer.parseInt(response[5]);
-                    checkForBestResult(node, incomingMessage, response[4], currentHopCount);
+//                    0041 SEROK 192.168.1.2 11003 Windows XP 2
+//                    0066 SEROK 2 10.100.1.124 11001 "American Pickers American Idol" 2
+                    int currentHopCount = Integer.parseInt(response[6]);
+                    checkForBestResult(node, incomingMessage, response[5], currentHopCount);
                 }
 
                 if (sendData != null) {
@@ -589,20 +592,20 @@ class NodeThread extends Thread {
     private boolean checkForBestResult(Node node, String incomingMessage, String fileName, int hops) {
         int hopsCount = default_hops_count - hops;
         for (String queriedName : node.getSentSearchQueryMap().keySet()) {
-            if (fileName.contains(queriedName)) {
+            if (fileName != null && !fileName.isEmpty() && fileName.toLowerCase().contains(queriedName)) {
                 if (hopsCount == 0 || node.getSentSearchQueryMap().get(queriedName) > hopsCount) {
-                    log(Node.INFO, "RECEIVE: ##BEST RESULT## with less number of hops '" + hopsCount + "' received '" +
+                    log(Node.INFO, "BEST RESULT: With less number of hops '" + hopsCount + "' received '" +
                             incomingMessage + "'");
                     node.updateSentSearchQueryMap(queriedName, hopsCount);
                     return true;
                 } else {
-                    log(Node.INFO, "IGNORE: Number of hops '" + hopsCount + "' exceeds or equal the current " +
+                    log(Node.INFO, "IGNORE: Number of hops '" + hopsCount + "' exceeds or equal to the current " +
                             "best hops count '" + node.getSentSearchQueryMap().get(queriedName) + " for '" +
                             incomingMessage + "'");
                 }
             }
         }
-        log(INFO, "The search result '" + incomingMessage + "' is not the best so far...");
+//        log(DEBUG, "The search result '" + incomingMessage + "' is not the best so far...");
         return false;
     }
 
