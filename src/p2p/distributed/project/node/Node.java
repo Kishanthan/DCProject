@@ -15,8 +15,11 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Scanner;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static p2p.distributed.project.node.Node.INFO;
+import static p2p.distributed.project.node.Node.default_hops_count;
 import static p2p.distributed.project.node.Node.log;
 
 public class Node {
@@ -102,8 +105,8 @@ public class Node {
         int bootstrapPort = 55555;
 
         String nodeIp = getNodeIpAddress();
-        int nodePort = 11006;
-        String nodeName = "node6";
+        int nodePort = 11014;
+        String nodeName = "node14";
 
         Node node = new Node(bootstrapIp, bootstrapPort, nodeName, nodeIp, nodePort);
 
@@ -224,7 +227,7 @@ public class Node {
                         nodeIp + ":" + nodePort + "'");
             } else {
                 String searchQuery = constructSearchQuery(nodeIp, nodePort, fileName, default_hops_count);
-                addToSentSearchQueryMap(nodeIp + " " + nodePort + " " + fileName, default_hops_count);
+                addToSentSearchQueryMap(fileName, default_hops_count);
                 sendSearchQuery(searchQuery);
             }
         }
@@ -490,7 +493,7 @@ class NodeThread extends Thread {
 
                 //incomingMessage = 0047 SER 129.82.62.142 5070 "Lord of the rings" 3
 
-                String[] response = incomingMessage.split(" ");
+                String[] response = splitIncomingMessage(incomingMessage);
                 byte[] sendData = null;
 
                 InetAddress responseAddress = incoming.getAddress();
@@ -559,10 +562,9 @@ class NodeThread extends Thread {
                 } else if (response.length >= 4 && Node.SEROK.equals(response[1])) {
                     log(Node.INFO, "RECEIVE: Search results received from '" + responseAddress + ":" + responsePort +
                             "' as '" + incomingMessage + "'");
-                    // 0041 SEROK 192.168.1.2 11003 Windows XP 2
-//                    String searchQueryId = response[2] + " " + response[3] + " " + response[4];
-//                    int currentHopCount = Integer.parseInt(response[5]);
-//                    checkForBestResult(node, searchQueryId, currentHopCount);
+//                     0041 SEROK 192.168.1.2 11003 Windows XP 2
+                    int currentHopCount = Integer.parseInt(response[5]);
+                    checkForBestResult(node, incomingMessage, response[4], currentHopCount);
                 }
 
                 if (sendData != null) {
@@ -577,16 +579,32 @@ class NodeThread extends Thread {
         }
     }
 
-    private boolean checkForBestResult(Node node, String incomingMessage, int hops) {
-        if (node.getSentSearchQueryMap().keySet().contains(incomingMessage) &&
-                node.getSentSearchQueryMap().get(incomingMessage) > hops) {
-            log(Node.INFO, "RECEIVE: Best result with less number of hops received '" +
-                    incomingMessage + "'");
-            node.updateSentSearchQueryMap(incomingMessage, hops);
-            return true;
+    private String[] splitIncomingMessage(String incomingMessage) {
+        List<String> list = new ArrayList<>();
+        Matcher m = Pattern.compile("([^\"]\\S*|\".+?\")\\s*").matcher(incomingMessage);
+        while (m.find()) {
+            list.add(m.group(1));
         }
-        log(Node.INFO, "IGNORE: Number of hops '" + hops + "' exceeds the current best result '" +
-                node.getSentSearchQueryMap().get(incomingMessage) + " for '" + incomingMessage + "'");
+        return list.toArray(new String[list.size()]);
+    }
+
+    private boolean checkForBestResult(Node node, String incomingMessage, String fileName, int hops) {
+        int hopsCount = default_hops_count - hops;
+        for (String queriedName : node.getSentSearchQueryMap().keySet()) {
+            if (fileName.contains(queriedName)) {
+                if (hopsCount == 0 || node.getSentSearchQueryMap().get(queriedName) > hopsCount) {
+                    log(Node.INFO, "RECEIVE: ##BEST RESULT## with less number of hops '" + hopsCount + "' received '" +
+                            incomingMessage + "'");
+                    node.updateSentSearchQueryMap(queriedName, hopsCount);
+                    return true;
+                } else {
+                    log(Node.INFO, "IGNORE: Number of hops '" + hopsCount + "' exceeds or equal the current " +
+                            "best hops count '" + node.getSentSearchQueryMap().get(queriedName) + " for '" +
+                            incomingMessage + "'");
+                }
+            }
+        }
+        log(INFO, "The search result '" + incomingMessage + "' is not the best so far...");
         return false;
     }
 
