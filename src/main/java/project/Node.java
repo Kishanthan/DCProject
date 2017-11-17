@@ -19,6 +19,8 @@ import java.util.regex.Pattern;
 
 import static project.Node.INFO;
 import static project.Node.DEBUG;
+import static project.Node.getFileNameFromSearchQuery;
+import static project.Node.splitIncomingMessage;
 
 public class Node {
 
@@ -85,7 +87,7 @@ public class Node {
         (new NodeThread(node)).start();
 
         //5. start listening to incoming search queries
-        node.startListeningForSearchQueries();
+        node.startListeningForQueries();
         System.exit(0);
     }
 
@@ -98,6 +100,7 @@ public class Node {
     public static final String JOIN = "JOIN";
     public static final String SEROK = "SEROK";
     public static final String LEAVE = "LEAVE";
+    public static final String RANK = "RANK";
 
     public static final int default_hops_count = 4;
 
@@ -113,6 +116,10 @@ public class Node {
     private Map<String, Long> receivedSearchQueryMap = new ConcurrentHashMap<>();
 
     private Map<String, Integer> sentSearchQueryMap = new ConcurrentHashMap<>();
+
+    private Map<String, Double> rankingMap = new ConcurrentHashMap<>();
+
+    private Map<String, Long> receivedRankMessageMap = new ConcurrentHashMap<>();
 
     public Node(String bootstrapIp, int bootstrapPort, String nodeName, String nodeIp, int nodePort, int hopsCount) {
         this.bootstrapIp = bootstrapIp;
@@ -169,7 +176,7 @@ public class Node {
     }
 
     private static String getLocalNodeIp() {
-        String address = "127.0.0.1";
+        String address = "localhost";
         try {
 
             Enumeration networkInterfaces = NetworkInterface.getNetworkInterfaces();
@@ -243,30 +250,49 @@ public class Node {
         this.fileList = subFileList;
     }
 
-    private void startListeningForSearchQueries() {
-        String fileName;
+    private void startListeningForQueries() {
+        String query;
         Scanner in = new Scanner(System.in);
 
         while (true) {
-            log(INFO, "Enter a file name as the search string : ");
-            fileName = in.nextLine();
+            log(INFO, "Enter a query : ");
+            query = in.nextLine();
 
-            if (LEAVE.toLowerCase().equals(fileName.toLowerCase())) {
+            if (LEAVE.toLowerCase().equals(query.toLowerCase())) {
                 sendLeaveMessageToPeers();
                 sendUnRegMessageToBootstrap();
                 break;
             }
 
-            log(DEBUG, "File name : " + fileName);
+            log(DEBUG, "Query : " + query);
+
+            //RANK "Kung fu panda" 4
+            if (query.startsWith(RANK)) {
+                String[] messages = splitIncomingMessage(query);
+                String fileToRank = getFileNameFromSearchQuery(messages[1]);
+                List<String> fileSearchResultsList = searchInCurrentFileList(fileToRank);
+
+                if (fileSearchResultsList.size() > 0) {
+                    log(INFO, "FOUND: Ranking file found in current node '" + nodeIp + ":" + nodePort + "' as '" +
+                            fileSearchResultsList + "'");
+                    continue;
+                }
+                String rankMessage = prependLengthToMessage("RANK " + nodeIp + ":" + nodePort + " " + messages[1] +
+                        " " + messages[2]);
+                addToReceivedRankMessageMap(rankMessage, System.currentTimeMillis());
+                sendRankingMessageToPeers(rankMessage);
+                continue;
+            }
+
             //search its own list first
-            List<String> searchedFiles = searchInCurrentFileList(fileName);
+            List<String> searchedFiles = searchInCurrentFileList(query);
 
             if (!searchedFiles.isEmpty()) {
                 log(INFO, "FOUND: Searched file found in current node '" + nodeIp + ":" + nodePort + "' as '" +
                         searchedFiles + "'");
             } else {
-                String searchQuery = constructSearchQuery(nodeIp, nodePort, fileName, hopsCount);
-                addToSentSearchQueryMap(fileName.toLowerCase(), hopsCount);
+                String searchQuery = constructSearchQuery(nodeIp, nodePort, query, hopsCount);
+                addToSentSearchQueryMap(query.toLowerCase(), hopsCount);
                 sendSearchQuery(searchQuery);
             }
         }
@@ -364,6 +390,28 @@ public class Node {
         }
     }
 
+    public void sendRankingMessageToPeers(String rankMessage) {
+        DatagramSocket clientSocket = null;
+        try {
+            for (Peer peer : routingTable) {
+                InetAddress address = InetAddress.getByName(peer.getIp());
+                clientSocket = new DatagramSocket();
+
+                byte[] sendData = rankMessage.getBytes();
+                DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, address, peer.getPort());
+                log(INFO, "SEND: Sending rank query '" + rankMessage + "' to '" + peer + "'");
+                clientSocket.send(sendPacket);
+            }
+        } catch (Exception e) {
+            log(ERROR, e);
+            e.printStackTrace();
+        } finally {
+            if (clientSocket != null) {
+                clientSocket.close();
+            }
+        }
+    }
+
     public void addToReceivedQueryMap(String searchQuery, long timestamp) {
         receivedSearchQueryMap.put(searchQuery, timestamp);
     }
@@ -421,6 +469,7 @@ public class Node {
 
         try {
             InetAddress bootstrapHost = InetAddress.getByName(bootstrapIp);
+            System.out.println(bootstrapHost);
             clientSocket = new DatagramSocket();
             byte[] receiveData = new byte[1024];
             String message = prependLengthToMessage("REG " + nodeIp + " " + nodePort + " " + nodeName);
@@ -492,6 +541,53 @@ public class Node {
     public void updateSentSearchQueryMap(String query, int hops) {
         sentSearchQueryMap.put(query, hops);
     }
+
+    public double rankFile(String incomingMessage, String fileToRank, String ranker, int suggestedRank) {
+        double newRank = suggestedRank;
+
+        String rankerWithFileName = ranker + "-" + fileToRank;
+        //check for duplicates
+        if (receivedRankMessageMap.containsKey(rankerWithFileName)) {
+            Node.log(DEBUG, "DROP: Rank message already received from '"+ranker+"' hence dropping '" +
+                    incomingMessage + "'");
+            newRank = rankingMap.get(fileToRank);
+        } else {
+            receivedRankMessageMap.put(rankerWithFileName, System.currentTimeMillis());
+            if (rankingMap.containsKey(fileToRank)) {
+                newRank = 0.5 * (rankingMap.get(fileToRank) + suggestedRank);
+                Node.log(INFO, "UPDATE-RANK: '" + fileToRank + "' - '" + newRank + "'");
+            }
+        }
+        rankingMap.put(fileToRank, newRank);
+        return newRank;
+    }
+
+    public Map<String, Long> getReceivedRankMessageMap() {
+        return receivedRankMessageMap;
+    }
+
+
+    public void addToReceivedRankMessageMap(String message, Long timestamp) {
+        receivedRankMessageMap.put(message, timestamp);
+    }
+
+
+    public void removeFromReceivedRankMessageMap(String message) {
+        receivedRankMessageMap.remove(message);
+    }
+
+    public static String[] splitIncomingMessage(String incomingMessage) {
+        List<String> list = new ArrayList<>();
+        Matcher m = Pattern.compile("([^\"]\\S*|\".+?\")\\s*").matcher(incomingMessage);
+        while (m.find()) {
+            list.add(m.group(1));
+        }
+        return list.toArray(new String[list.size()]);
+    }
+
+    public static String getFileNameFromSearchQuery(String query) {
+        return query.trim().replaceAll("\"", "");
+    }
 }
 
 class NodeThread extends Thread {
@@ -500,10 +596,6 @@ class NodeThread extends Thread {
 
     NodeThread(Node node) {
         this.node = node;
-    }
-
-    private String getFileNameFromSearchQuery(String query) {
-        return query.trim().replaceAll("\"", "");
     }
 
     public void run() {
@@ -532,7 +624,7 @@ class NodeThread extends Thread {
                     Node.log(INFO, "RECEIVE: Search query received from '" + responseAddress + ":" +
                             responsePort + "' as '" + incomingMessage + "'");
 
-                    String searchFilename = this.getFileNameFromSearchQuery(response[4]);
+                    String searchFilename = getFileNameFromSearchQuery(response[4]);
 
                     List<String> fileSearchResultsList = node.searchInCurrentFileList(searchFilename);
                     String responseString = "";
@@ -599,6 +691,35 @@ class NodeThread extends Thread {
 //                    message - 0066 SEROK 2 10.100.1.124 11001 "American Pickers American Idol" 2
                     int currentHopCount = Integer.parseInt(response[6]);
                     checkForBestResult(node, incomingMessage, response[5], currentHopCount);
+                } else if (response.length >= 4 && Node.RANK.equals(response[1])) {
+                    Node.log(INFO, "RECEIVE: Rank query received from '" + responseAddress + ":" + responsePort +
+                            "' as '" + incomingMessage + "'");
+
+                    if (node.getReceivedRankMessageMap().containsKey(incomingMessage)) {
+                        long timeInterval = System.currentTimeMillis() -
+                                node.getReceivedRankMessageMap().get(incomingMessage);
+
+                        if (timeInterval < 2000) {
+                            Node.log(DEBUG, "DROP: DUPLICATE: Rank message already sent " + (0.005 * timeInterval) +
+                                    " sec before, hence dropping '" + incomingMessage + "'");
+                            continue;
+                        }
+                        node.removeFromReceivedRankMessageMap(incomingMessage);
+                    }
+
+                    //0018 RANK 129.82.123.45 "Kung fu panda" 4
+                    String fileToRank = getFileNameFromSearchQuery(response[3]);
+                    List<String> fileSearchResultsList = node.searchInCurrentFileList(fileToRank);
+
+                    if (fileSearchResultsList.size() > 0) {
+                        int suggestedRank = Integer.parseInt(response[4]);
+                        String ranker = response[2];
+                        double newRanking = node.rankFile(incomingMessage, fileToRank, ranker, suggestedRank);
+                        Node.log(INFO, "RANK : '" + fileToRank + "' - '" + newRanking + "'");
+                    } else {
+                        node.addToReceivedRankMessageMap(incomingMessage, System.currentTimeMillis());
+                        node.sendRankingMessageToPeers(incomingMessage);
+                    }
                 }
 
                 if (sendData != null) {
@@ -620,15 +741,6 @@ class NodeThread extends Thread {
             sb.append(" ");
         }
         return sb.toString().trim();
-    }
-
-    private String[] splitIncomingMessage(String incomingMessage) {
-        List<String> list = new ArrayList<>();
-        Matcher m = Pattern.compile("([^\"]\\S*|\".+?\")\\s*").matcher(incomingMessage);
-        while (m.find()) {
-            list.add(m.group(1));
-        }
-        return list.toArray(new String[list.size()]);
     }
 
     private boolean checkForBestResult(Node node, String incomingMessage, String fileName, int hops) {
