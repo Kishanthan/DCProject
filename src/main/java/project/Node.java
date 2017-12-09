@@ -1,4 +1,4 @@
-package project;
+package main.java.project;
 
 import java.io.IOException;
 import java.net.DatagramPacket;
@@ -17,10 +17,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static project.Node.INFO;
-import static project.Node.DEBUG;
-import static project.Node.getFileNameFromSearchQuery;
-import static project.Node.splitIncomingMessage;
+import static main.java.project.Node.INFO;
+import static main.java.project.Node.DEBUG;
+import static main.java.project.Node.getFileNameFromSearchQuery;
+import static main.java.project.Node.splitIncomingMessage;
 
 public class Node {
 
@@ -101,10 +101,13 @@ public class Node {
     public static final String SEROK = "SEROK";
     public static final String LEAVE = "LEAVE";
     public static final String RANK = "RANK";
+    public static final String COM = "COM";
+    public static final String COMRPLY = "COMRPLY";
 
     public static final int default_hops_count = 4;
 
     private List<Peer> routingTable = new ArrayList<>();
+    private List<Forum> forumList = new ArrayList<>();
     private String[] fileList;
     private String bootstrapIp;
     private int bootstrapPort;
@@ -120,6 +123,8 @@ public class Node {
     private Map<String, Double> rankingMap = new ConcurrentHashMap<>();
 
     private Map<String, Long> receivedRankMessageMap = new ConcurrentHashMap<>();
+
+    private Map<String, Long> receivedForumMessageMap = new ConcurrentHashMap<>();
 
     public Node(String bootstrapIp, int bootstrapPort, String nodeName, String nodeIp, int nodePort, int hopsCount) {
         this.bootstrapIp = bootstrapIp;
@@ -160,6 +165,10 @@ public class Node {
 
     public int getHopsCount() {
         return hopsCount;
+    }
+
+    public List<Forum> getForumList() {
+        return forumList;
     }
 
 
@@ -281,6 +290,28 @@ public class Node {
                         " " + messages[2]);
                 addToReceivedRankMessageMap(rankMessage, System.currentTimeMillis());
                 sendRankingMessageToPeers(rankMessage);
+                continue;
+            } else if (query.startsWith(COM)) {
+                String[] messages = splitIncomingMessage(query);
+                Long currentTime = System.currentTimeMillis();
+                Forum forum = addToCurrentForumList(messages[1], currentTime.toString() , nodeIp + ":" + nodePort);
+
+                String forumCreationMessage = prependLengthToMessage("COM " + nodeIp + ":" + nodePort + " " + forum.getCommentTime() +
+                        " " + forum.getComment());
+
+                addToReceivedForumMessageMap(forumCreationMessage, System.currentTimeMillis());
+                sendForumInitiationMessageToPeers(forumCreationMessage);
+                continue;
+            } else if (query.startsWith(COMRPLY)) {
+                String[] messages = splitIncomingMessage(query);
+                Long currentTime = System.currentTimeMillis();
+                Forum forum = addForumReplyToCurrentForumList(messages[1], currentTime.toString() , nodeIp + ":" + nodePort);
+
+                String forumCreationMessage = prependLengthToMessage("COM " + nodeIp + ":" + nodePort + " " + forum.getCommentTime() +
+                        " " + forum.getComment());
+
+                addToReceivedForumMessageMap(forumCreationMessage, System.currentTimeMillis());
+                sendForumInitiationMessageToPeers(forumCreationMessage);
                 continue;
             }
 
@@ -412,6 +443,28 @@ public class Node {
         }
     }
 
+    public void sendForumInitiationMessageToPeers(String forumCreationMessage) {
+        DatagramSocket clientSocket = null;
+        try {
+            for (Peer peer : routingTable) {
+                InetAddress address = InetAddress.getByName(peer.getIp());
+                clientSocket = new DatagramSocket();
+
+                byte[] sendData = forumCreationMessage.getBytes();
+                DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, address, peer.getPort());
+                log(INFO, "SEND: Sending forum distribution query '" + forumCreationMessage + "' to '" + peer + "'");
+                clientSocket.send(sendPacket);
+            }
+        } catch (Exception e) {
+            log(ERROR, e);
+            e.printStackTrace();
+        } finally {
+            if (clientSocket != null) {
+                clientSocket.close();
+            }
+        }
+    }
+
     public void addToReceivedQueryMap(String searchQuery, long timestamp) {
         receivedSearchQueryMap.put(searchQuery, timestamp);
     }
@@ -526,6 +579,38 @@ public class Node {
         return queriedFileList;
     }
 
+    public Forum addToCurrentForumList(String comment, String commentTime, String ownerIp) {
+        Forum forum;
+        for (Forum temforum: getForumList()) {
+            if (temforum.getComment() == comment &&
+                    temforum.getCommentTime() == commentTime &&
+                    temforum.getOwnerIp() == ownerIp
+                    ) {
+                return temforum;
+            }
+        }
+
+        forum = new Forum(comment, commentTime, ownerIp);
+        this.forumList.add(forum);
+        return forum;
+    }
+
+    public Forum addForumReplyToCurrentForumList(String comment, String commentTime, String ownerIp) {
+        Forum forum = null;
+        for (Forum temforum: getForumList()) {
+            if (temforum.getComment() == comment &&
+                    temforum.getCommentTime() == commentTime &&
+                    temforum.getOwnerIp() == ownerIp
+                    ) {
+                ForumReply forumReply = new ForumReply(comment, commentTime, ownerIp);
+                temforum.addForumReply(forumReply);
+                forum = temforum;
+            }
+        }
+
+        return forum;
+    }
+
     public Map<String, Integer> getSentSearchQueryMap() {
         return sentSearchQueryMap;
     }
@@ -571,9 +656,21 @@ public class Node {
         receivedRankMessageMap.put(message, timestamp);
     }
 
+    public void addToReceivedForumMessageMap(String message, Long timestamp) {
+        receivedForumMessageMap.put(message, timestamp);
+    }
+
+    public Map<String, Long> getReceivedForumMessageMap() {
+        return receivedForumMessageMap;
+    }
+
 
     public void removeFromReceivedRankMessageMap(String message) {
         receivedRankMessageMap.remove(message);
+    }
+
+    public void removeFromReceivedForumMessageMap(String message) {
+        receivedForumMessageMap.remove(message);
     }
 
     public static String[] splitIncomingMessage(String incomingMessage) {
@@ -720,6 +817,39 @@ class NodeThread extends Thread {
                         node.addToReceivedRankMessageMap(incomingMessage, System.currentTimeMillis());
                         node.sendRankingMessageToPeers(incomingMessage);
                     }
+                } else if (response.length >= 4 && Node.COM.equals(response[1])) {
+                    Node.log(INFO, "RECEIVE: Forum query received from '" + responseAddress + ":" + responsePort +
+                            "' as '" + incomingMessage + "'");
+
+                    if (node.getReceivedForumMessageMap().containsKey(incomingMessage)) {
+                        long timeInterval = System.currentTimeMillis() - node.getReceivedForumMessageMap().get(incomingMessage);
+
+                        if (timeInterval < 2000) {
+                            Node.log(DEBUG, "DROP: DUPLICATE: COM message already sent " + (0.005 * timeInterval) +
+                                    " sec before, hence dropping '" + incomingMessage + "'");
+                            continue;
+                        }
+                        node.removeFromReceivedForumMessageMap(incomingMessage);
+                    }
+
+                    //0018 RANK 129.82.123.45 "Kung fu panda" 4
+
+                    /*String fileToRank = getFileNameFromSearchQuery(response[3]);
+                    List<String> fileSearchResultsList = node.searchInCurrentFileList(fileToRank);
+*/
+                    /*if (fileSearchResultsList.size() > 0) {
+                        int suggestedRank = Integer.parseInt(response[4]);
+                        String ranker = response[2];
+                        double newRanking = node.rankFile(incomingMessage, fileToRank, ranker, suggestedRank);
+                        Node.log(INFO, "RANK : '" + fileToRank + "' - '" + newRanking + "'");
+                    } else {*/
+                        //node.addToReceivedRankMessageMap(incomingMessage, System.currentTimeMillis());
+
+                    //}
+                    node.addToCurrentForumList(response[4], response[3], response[2]);
+                    node.addToReceivedForumMessageMap(incomingMessage, System.currentTimeMillis());
+                    node.sendForumInitiationMessageToPeers(incomingMessage);
+
                 }
 
                 if (sendData != null) {
