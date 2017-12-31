@@ -27,7 +27,7 @@ public class ForumReply {
         return this.order;
     }
 
-    public int setOrder(int order){
+    public void setOrder(int order){
         this.order = order;
     }
 }

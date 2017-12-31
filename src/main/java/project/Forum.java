@@ -1,8 +1,6 @@
 package main.java.project;
 
-import java.lang.reflect.Array;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
 
 public class Forum {
@@ -27,7 +25,7 @@ public class Forum {
         return this.ownerIp;
     }
 
-    public List ForumReply(){
+    public List<ForumReply> getForumReply(){
         return this.forumReply;
     }
 

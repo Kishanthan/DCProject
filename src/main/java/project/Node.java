@@ -93,6 +93,7 @@ public class Node {
 
     public static final String REG_OK = "REGOK";
     public static final String INFO = "INFO";
+    public static final String INDENT = "\t";
     public static final String WARN = "WARN";
     public static final String ERROR = "ERROR";
     public static final String DEBUG = "DEBUG";
@@ -103,6 +104,9 @@ public class Node {
     public static final String RANK = "RANK";
     public static final String COM = "COM";
     public static final String COMRPLY = "COMRPLY";
+    public static final String VERIFIED = "VERIFIED";
+    public static final String UNVERIFIED = "UNVERIFIED";
+
 
     public static final int default_hops_count = 4;
 
@@ -125,6 +129,8 @@ public class Node {
     private Map<String, Long> receivedRankMessageMap = new ConcurrentHashMap<>();
 
     private Map<String, Long> receivedForumMessageMap = new ConcurrentHashMap<>();
+
+    private Map<String, Long> receivedForumReplyMessageMap = new ConcurrentHashMap<>();
 
     public Node(String bootstrapIp, int bootstrapPort, String nodeName, String nodeIp, int nodePort, int hopsCount) {
         this.bootstrapIp = bootstrapIp;
@@ -291,7 +297,7 @@ public class Node {
                 addToReceivedRankMessageMap(rankMessage, System.currentTimeMillis());
                 sendRankingMessageToPeers(rankMessage);
                 continue;
-            } else if (query.startsWith(COM)) {
+            } else if (query.startsWith(COM + " ")) {
                 String[] messages = splitIncomingMessage(query);
                 Long currentTime = System.currentTimeMillis();
                 Forum forum = addToCurrentForumList(messages[1], currentTime.toString() , nodeIp + ":" + nodePort);
@@ -301,17 +307,26 @@ public class Node {
 
                 addToReceivedForumMessageMap(forumCreationMessage, System.currentTimeMillis());
                 sendForumInitiationMessageToPeers(forumCreationMessage);
+                printForumList();
                 continue;
-            } else if (query.startsWith(COMRPLY)) {
+            } else if (query.startsWith(COMRPLY + " ")) {
                 String[] messages = splitIncomingMessage(query);
                 Long currentTime = System.currentTimeMillis();
-                Forum forum = addForumReplyToCurrentForumList(messages[1], currentTime.toString() , nodeIp + ":" + nodePort);
+                Forum forum = addForumReplyToCurrentForumList(messages[3], nodeIp + ":" + nodePort, currentTime.toString() , messages[1], messages[2], true);
 
-                String forumCreationMessage = prependLengthToMessage("COM " + nodeIp + ":" + nodePort + " " + forum.getCommentTime() +
-                        " " + forum.getComment());
+                String forumReplyMessage = "COMRPLY " + messages[1] + " " + messages[2] + " " + nodeIp + ":" + nodePort + " " + currentTime.toString() +
+                        " " + messages[3];
 
-                addToReceivedForumMessageMap(forumCreationMessage, System.currentTimeMillis());
-                sendForumInitiationMessageToPeers(forumCreationMessage);
+                if (forum != null) {
+                    forumReplyMessage = prependLengthToMessage(forumReplyMessage + " " + VERIFIED);
+                } else {
+                    forumReplyMessage = prependLengthToMessage(forumReplyMessage + " " + UNVERIFIED);
+                }
+
+                log(INFO, "Forum reply mesage : " + forumReplyMessage);
+                addToReceivedForumReplyMessageMap(forumReplyMessage, System.currentTimeMillis());
+                sendForumReplyMessageToPeers(forumReplyMessage);
+                printForumList();
                 continue;
             }
 
@@ -465,6 +480,28 @@ public class Node {
         }
     }
 
+    public void sendForumReplyMessageToPeers(String forumReplyMessage) {
+        DatagramSocket clientSocket = null;
+        try {
+            for (Peer peer : routingTable) {
+                InetAddress address = InetAddress.getByName(peer.getIp());
+                clientSocket = new DatagramSocket();
+
+                byte[] sendData = forumReplyMessage.getBytes();
+                DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, address, peer.getPort());
+                log(INFO, "SEND: Sending forum rely query '" + forumReplyMessage + "' to '" + peer + "'");
+                clientSocket.send(sendPacket);
+            }
+        } catch (Exception e) {
+            log(ERROR, e);
+            e.printStackTrace();
+        } finally {
+            if (clientSocket != null) {
+                clientSocket.close();
+            }
+        }
+    }
+
     public void addToReceivedQueryMap(String searchQuery, long timestamp) {
         receivedSearchQueryMap.put(searchQuery, timestamp);
     }
@@ -565,7 +602,12 @@ public class Node {
     }
 
     public static void log(String level, Object msg) {
-        System.out.println(level + " : " + msg.toString());
+        if (level != null) {
+            System.out.println(level + " : " + msg.toString());
+        } else {
+            System.out.println(msg.toString());
+        }
+
     }
 
     public List<String> searchInCurrentFileList(String fileName) {
@@ -579,34 +621,84 @@ public class Node {
         return queriedFileList;
     }
 
-    public Forum addToCurrentForumList(String comment, String commentTime, String ownerIp) {
-        Forum forum;
-        for (Forum temforum: getForumList()) {
-            if (temforum.getComment() == comment &&
-                    temforum.getCommentTime() == commentTime &&
-                    temforum.getOwnerIp() == ownerIp
-                    ) {
-                return temforum;
-            }
-        }
-
-        forum = new Forum(comment, commentTime, ownerIp);
-        this.forumList.add(forum);
-        return forum;
-    }
-
-    public Forum addForumReplyToCurrentForumList(String comment, String commentTime, String ownerIp) {
+    public Forum getMatchingForumFromTheList(String ownerIp, String commentTime) {
         Forum forum = null;
         for (Forum temforum: getForumList()) {
-            if (temforum.getComment() == comment &&
-                    temforum.getCommentTime() == commentTime &&
-                    temforum.getOwnerIp() == ownerIp
+            if (temforum.getCommentTime().equals(commentTime.toString())  &&
+                    temforum.getOwnerIp().equals(ownerIp.toString())
                     ) {
-                ForumReply forumReply = new ForumReply(comment, commentTime, ownerIp);
-                temforum.addForumReply(forumReply);
                 forum = temforum;
             }
         }
+        return forum;
+    }
+
+    public Forum addToCurrentForumList(String comment, String commentTime, String ownerIp) {
+        Forum forum = getMatchingForumFromTheList(commentTime, ownerIp);
+
+        if (forum == null) {
+            forum = new Forum(comment, commentTime, ownerIp);
+            this.forumList.add(forum);
+        }
+        return forum;
+    }
+
+    public void updateCurrentForumList(Forum forumToUpdate) {
+        Boolean isForumUpdated = false;
+        Forum forum = null;
+        for (Forum temforum: getForumList()) {
+            if (temforum.getCommentTime() == forumToUpdate.getCommentTime() &&
+                    temforum.getOwnerIp() == forumToUpdate.getOwnerIp()
+                    ) {
+                forum = temforum;
+                break;
+            }
+        }
+
+        if (forum != null) {
+            int index = this.forumList.indexOf(forum);
+            this.forumList.remove(index);
+            this.forumList.add(index, forumToUpdate);
+            isForumUpdated = true;
+        }
+
+        if (!isForumUpdated) {
+            log(INFO, "No matching forum to update");
+        }
+    }
+
+    public void printForumList() {
+        log(null, "");
+        log(INFO, "Forum List");
+        for (Forum temforum: getForumList()) {
+            log(null, temforum.getComment() + " " + temforum.getCommentTime() + " " + temforum.getOwnerIp());
+            for (ForumReply forumReply: temforum.getForumReply()) {
+                log(INDENT, forumReply.getComment() + " " + forumReply.getCommentTime() + " " + forumReply.getOwnerIp());
+            }
+        }
+        log(null, "");
+    }
+
+    public Forum addForumReplyToCurrentForumList(String reply, String replyOwnerIp, String replyTime, String forumOwnerIp, String forumTime, Boolean addIfOnlyForumOriginator) {
+
+        Forum forum = null;
+        if (addIfOnlyForumOriginator) {
+            if (forumOwnerIp.equals((nodeIp + ":" + nodePort).toString())) {
+                log(INFO, "Reply to forum initiated by same node : " + nodeIp + ":" + nodePort + " => " +forumOwnerIp);
+                forum = getMatchingForumFromTheList(forumOwnerIp, forumTime);
+                ForumReply forumReply = new ForumReply(reply, replyTime, replyOwnerIp);
+                forum.addForumReply(forumReply);
+                log(INFO,"Matching forum found: " + forum.getComment());
+                updateCurrentForumList(forum);
+            }
+        } else {
+            log(INFO, "Initiated by another form:" + nodeIp + ":" + nodePort + " => " +forumOwnerIp);
+            forum = getMatchingForumFromTheList(forumOwnerIp, forumTime);
+            ForumReply forumReply = new ForumReply(reply, replyTime, replyOwnerIp);
+            forum.addForumReply(forumReply);
+            updateCurrentForumList(forum);
+        }
+
 
         return forum;
     }
@@ -660,8 +752,16 @@ public class Node {
         receivedForumMessageMap.put(message, timestamp);
     }
 
+    public void addToReceivedForumReplyMessageMap(String message, Long timestamp) {
+        receivedForumReplyMessageMap.put(message, timestamp);
+    }
+
     public Map<String, Long> getReceivedForumMessageMap() {
         return receivedForumMessageMap;
+    }
+
+    public Map<String, Long> getReceivedForumReplyMessageMap() {
+        return receivedForumReplyMessageMap;
     }
 
 
@@ -671,6 +771,10 @@ public class Node {
 
     public void removeFromReceivedForumMessageMap(String message) {
         receivedForumMessageMap.remove(message);
+    }
+
+    public void removeFromReceivedForumReplyMessageMap(String message) {
+        receivedForumReplyMessageMap.remove(message);
     }
 
     public static String[] splitIncomingMessage(String incomingMessage) {
@@ -849,6 +953,41 @@ class NodeThread extends Thread {
                     node.addToCurrentForumList(response[4], response[3], response[2]);
                     node.addToReceivedForumMessageMap(incomingMessage, System.currentTimeMillis());
                     node.sendForumInitiationMessageToPeers(incomingMessage);
+                    node.printForumList();
+
+                } else if (response.length >= 4 && Node.COMRPLY.equals(response[1])) {
+                    Node.log(INFO, "RECEIVE: Forum reply received from '" + responseAddress + ":" + responsePort +
+                            "' as '" + incomingMessage + "'");
+
+                    if (node.getReceivedForumReplyMessageMap().containsKey(incomingMessage)) {
+                        long timeInterval = System.currentTimeMillis() - node.getReceivedForumReplyMessageMap().get(incomingMessage);
+
+                        if (timeInterval < 2000) {
+                            Node.log(DEBUG, "DROP: DUPLICATE: COMRPLY message already sent " + (0.005 * timeInterval) +
+                                    " sec before, hence dropping '" + incomingMessage + "'");
+                            continue;
+                        }
+                        node.removeFromReceivedForumReplyMessageMap(incomingMessage);
+                    }
+
+                    Boolean addIfFromOriginator = null;
+                    if (Node.VERIFIED.toString().equals(response[7].toString())) {
+                        addIfFromOriginator = false;
+                    } else {
+                        addIfFromOriginator = true;
+                    }
+
+                    Forum forum = node.addForumReplyToCurrentForumList(response[6], response[4] , response[5] , response[2], response[3], addIfFromOriginator);
+
+                    node.addToReceivedForumReplyMessageMap(incomingMessage, System.currentTimeMillis());
+
+                    if (Node.UNVERIFIED.toString().equals(response[7].toString()) && forum != null) {
+                        incomingMessage = incomingMessage.replace(Node.UNVERIFIED, Node.VERIFIED);
+                    }
+
+                    node.addToReceivedForumReplyMessageMap(incomingMessage, System.currentTimeMillis());
+                    node.sendForumReplyMessageToPeers(incomingMessage);
+                    node.printForumList();
 
                 }
 
