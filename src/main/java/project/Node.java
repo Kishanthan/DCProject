@@ -119,6 +119,7 @@ public class Node {
     private String nodeIp;
     private int nodePort;
     private int hopsCount;
+    private Long currentTimestamp = (long)0;
 
     private Map<String, Long> receivedSearchQueryMap = new ConcurrentHashMap<>();
 
@@ -177,6 +178,14 @@ public class Node {
         return forumList;
     }
 
+    public Long setCurrentTimestamp(Long timestamp) {
+        currentTimestamp = timestamp > currentTimestamp ? timestamp + 1 : currentTimestamp + 1;
+        return currentTimestamp;
+    }
+
+    public Long getCurrentTimestamp() {
+        return currentTimestamp;
+    }
 
     public void addToRoutingTable(Peer peer) {
         if (!routingTable.contains(peer)) {
@@ -299,32 +308,43 @@ public class Node {
                 continue;
             } else if (query.startsWith(COM + " ")) {
                 String[] messages = splitIncomingMessage(query);
-                Long currentTime = System.currentTimeMillis();
+
+                Long currentTime = getCurrentTimestamp();
+                currentTime = setCurrentTimestamp(currentTime);
+
                 Forum forum = addToCurrentForumList(messages[1], currentTime.toString() , nodeIp + ":" + nodePort);
 
-                String forumCreationMessage = prependLengthToMessage("COM " + nodeIp + ":" + nodePort + " " + forum.getCommentTime() +
-                        " " + forum.getComment());
+                String forumCreationMessage = "COM " + nodeIp + ":" + nodePort + " " + forum.getCommentTime() +
+                        " " + forum.getComment();
 
                 addToReceivedForumMessageMap(forumCreationMessage, System.currentTimeMillis());
+
+                forumCreationMessage = prependLengthToMessage(forumCreationMessage + " " + currentTime.toString());
                 sendForumInitiationMessageToPeers(forumCreationMessage);
                 printForumList();
                 continue;
             } else if (query.startsWith(COMRPLY + " ")) {
                 String[] messages = splitIncomingMessage(query);
-                Long currentTime = System.currentTimeMillis();
+
+                Long currentTime = getCurrentTimestamp();
+                currentTime = setCurrentTimestamp(currentTime);
+
                 Forum forum = addForumReplyToCurrentForumList(messages[3], nodeIp + ":" + nodePort, currentTime.toString() , messages[1], messages[2], true);
 
                 String forumReplyMessage = "COMRPLY " + messages[1] + " " + messages[2] + " " + nodeIp + ":" + nodePort + " " + currentTime.toString() +
                         " " + messages[3];
 
                 if (forum != null) {
-                    forumReplyMessage = prependLengthToMessage(forumReplyMessage + " " + VERIFIED);
+                    forumReplyMessage = forumReplyMessage + " " + VERIFIED;
                 } else {
-                    forumReplyMessage = prependLengthToMessage(forumReplyMessage + " " + UNVERIFIED);
+                    forumReplyMessage = forumReplyMessage + " " + UNVERIFIED;
                 }
 
                 log(INFO, "Forum reply mesage : " + forumReplyMessage);
                 addToReceivedForumReplyMessageMap(forumReplyMessage, System.currentTimeMillis());
+
+                forumReplyMessage = prependLengthToMessage(forumReplyMessage + " "+ currentTime.toString());
+
                 sendForumReplyMessageToPeers(forumReplyMessage);
                 printForumList();
                 continue;
@@ -925,6 +945,7 @@ class NodeThread extends Thread {
                     Node.log(INFO, "RECEIVE: Forum query received from '" + responseAddress + ":" + responsePort +
                             "' as '" + incomingMessage + "'");
 
+                    incomingMessage = removeLengthAndTimestampFromMessage(incomingMessage);
                     if (node.getReceivedForumMessageMap().containsKey(incomingMessage)) {
                         long timeInterval = System.currentTimeMillis() - node.getReceivedForumMessageMap().get(incomingMessage);
 
@@ -952,12 +973,18 @@ class NodeThread extends Thread {
                     //}
                     node.addToCurrentForumList(response[4], response[3], response[2]);
                     node.addToReceivedForumMessageMap(incomingMessage, System.currentTimeMillis());
+
+                    Long currentTime = node.setCurrentTimestamp(Long.parseLong(response[5]));
+                    incomingMessage = node.prependLengthToMessage(incomingMessage + " " + currentTime.toString());
+
                     node.sendForumInitiationMessageToPeers(incomingMessage);
                     node.printForumList();
 
                 } else if (response.length >= 4 && Node.COMRPLY.equals(response[1])) {
                     Node.log(INFO, "RECEIVE: Forum reply received from '" + responseAddress + ":" + responsePort +
                             "' as '" + incomingMessage + "'");
+
+                    incomingMessage = removeLengthAndTimestampFromMessage(incomingMessage);
 
                     if (node.getReceivedForumReplyMessageMap().containsKey(incomingMessage)) {
                         long timeInterval = System.currentTimeMillis() - node.getReceivedForumReplyMessageMap().get(incomingMessage);
@@ -986,6 +1013,10 @@ class NodeThread extends Thread {
                     }
 
                     node.addToReceivedForumReplyMessageMap(incomingMessage, System.currentTimeMillis());
+
+                    Long currentTime = node.setCurrentTimestamp(Long.parseLong(response[8]));
+                    incomingMessage = node.prependLengthToMessage(incomingMessage + " " + currentTime.toString());
+
                     node.sendForumReplyMessageToPeers(incomingMessage);
                     node.printForumList();
 
@@ -1001,6 +1032,15 @@ class NodeThread extends Thread {
             Node.log(Node.ERROR, e);
             e.printStackTrace();
         }
+    }
+
+    private String removeLengthAndTimestampFromMessage(String message) {
+        Node.log(INFO,"Original Message : " + message);
+        message = message.split(" ", 2)[1];
+        message = message.substring(0, message.lastIndexOf(" ",message.length()));
+
+        Node.log(INFO,"Trimmed Message : " + message);
+        return message;
     }
 
     private String joinSearchResults(List<String> fileSearchResultsList) {
