@@ -1,4 +1,4 @@
-package main.java.project;
+package project;
 
 import java.io.IOException;
 import java.net.DatagramPacket;
@@ -17,10 +17,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static main.java.project.Node.INFO;
-import static main.java.project.Node.DEBUG;
-import static main.java.project.Node.getFileNameFromSearchQuery;
-import static main.java.project.Node.splitIncomingMessage;
+import static project.Node.INFO;
+import static project.Node.DEBUG;
+import static project.Node.getResourceNameFromSearchQuery;
+import static project.Node.splitIncomingMessage;
 
 public class Node {
 
@@ -108,7 +108,7 @@ public class Node {
     public static final String UNVERIFIED = "UNVERIFIED";
 
 
-    public static final int default_hops_count = 4;
+    public static final int default_hops_count = 5;
 
     private List<Peer> routingTable = new ArrayList<>();
     private List<Forum> forumList = new ArrayList<>();
@@ -293,20 +293,32 @@ public class Node {
             //RANK "Kung fu panda" 4
             if (query.startsWith(RANK)) {
                 String[] messages = splitIncomingMessage(query);
-                String fileToRank = getFileNameFromSearchQuery(messages[1]);
-                List<String> fileSearchResultsList = searchInCurrentFileList(fileToRank);
+                String resourceName = getResourceNameFromSearchQuery(messages[1]);
+                List<String> fileSearchResultsList = searchInCurrentFileList(resourceName);
 
                 if (fileSearchResultsList.size() > 0) {
                     log(INFO, "FOUND: Ranking file found in current node '" + nodeIp + ":" + nodePort + "' as '" +
                             fileSearchResultsList + "'");
                     continue;
                 }
+
+                String[] resources = resourceName.split(" ");
+                if (resources.length > 1) {
+                    Forum forum = getMatchingForumFromTheList(resources[0], resources[1]);
+                    if (resources[0].equals(nodeIp + ":" + nodePort) && forum != null) {
+                        log(INFO, "FOUND: Ranking forum found in current node '" + nodeIp + ":" + nodePort + "' as '" +
+                                fileSearchResultsList + "'");
+                        continue;
+                    }
+                }
+
                 String rankMessage = prependLengthToMessage("RANK " + nodeIp + ":" + nodePort + " " + messages[1] +
                         " " + messages[2]);
                 addToReceivedRankMessageMap(rankMessage, System.currentTimeMillis());
                 sendRankingMessageToPeers(rankMessage);
                 continue;
             } else if (query.startsWith(COM + " ")) {
+                //COM "Should the vehicle prices be increased again?"
                 String[] messages = splitIncomingMessage(query);
 
                 Long currentTime = getCurrentTimestamp();
@@ -324,15 +336,17 @@ public class Node {
                 printForumList();
                 continue;
             } else if (query.startsWith(COMRPLY + " ")) {
+                // COMRPLY 10.100.1.124:10973 9 "Yes, it should be increased"
                 String[] messages = splitIncomingMessage(query);
 
                 Long currentTime = getCurrentTimestamp();
                 currentTime = setCurrentTimestamp(currentTime);
 
-                Forum forum = addForumReplyToCurrentForumList(messages[3], nodeIp + ":" + nodePort, currentTime.toString() , messages[1], messages[2], true);
+                Forum forum = addForumReplyToCurrentForumList(messages[3], nodeIp + ":" + nodePort,
+                        currentTime.toString() , messages[1], messages[2], true);
 
-                String forumReplyMessage = "COMRPLY " + messages[1] + " " + messages[2] + " " + nodeIp + ":" + nodePort + " " + currentTime.toString() +
-                        " " + messages[3];
+                String forumReplyMessage = "COMRPLY " + messages[1] + " " + messages[2] + " " + nodeIp + ":" +
+                        nodePort + " " + currentTime.toString() + " " + messages[3];
 
                 if (forum != null) {
                     forumReplyMessage = forumReplyMessage + " " + VERIFIED;
@@ -643,11 +657,10 @@ public class Node {
 
     public Forum getMatchingForumFromTheList(String ownerIp, String commentTime) {
         Forum forum = null;
-        for (Forum temforum: getForumList()) {
-            if (temforum.getCommentTime().equals(commentTime.toString())  &&
-                    temforum.getOwnerIp().equals(ownerIp.toString())
-                    ) {
-                forum = temforum;
+        for (Forum tempForum : getForumList()) {
+            if (tempForum.getCommentTime().equals(commentTime) &&
+                    tempForum.getOwnerIp().equals(ownerIp)) {
+                forum = tempForum;
             }
         }
         return forum;
@@ -703,7 +716,7 @@ public class Node {
 
         Forum forum = null;
         if (addIfOnlyForumOriginator) {
-            if (forumOwnerIp.equals((nodeIp + ":" + nodePort).toString())) {
+            if (forumOwnerIp.equals((nodeIp + ":" + nodePort))) {
                 log(INFO, "Reply to forum initiated by same node : " + nodeIp + ":" + nodePort + " => " +forumOwnerIp);
                 forum = getMatchingForumFromTheList(forumOwnerIp, forumTime);
                 ForumReply forumReply = new ForumReply(reply, replyTime, replyOwnerIp);
@@ -712,7 +725,7 @@ public class Node {
                 updateCurrentForumList(forum);
             }
         } else {
-            log(INFO, "Initiated by another form:" + nodeIp + ":" + nodePort + " => " +forumOwnerIp);
+            log(INFO, "Initiated by another forum:" + nodeIp + ":" + nodePort + " => " +forumOwnerIp);
             forum = getMatchingForumFromTheList(forumOwnerIp, forumTime);
             ForumReply forumReply = new ForumReply(reply, replyTime, replyOwnerIp);
             forum.addForumReply(forumReply);
@@ -739,7 +752,7 @@ public class Node {
         sentSearchQueryMap.put(query, hops);
     }
 
-    public double rankFile(String incomingMessage, String fileToRank, String ranker, int suggestedRank) {
+    public double rankResource(String incomingMessage, String fileToRank, String ranker, int suggestedRank) {
         double newRank = suggestedRank;
 
         String rankerWithFileName = ranker + "-" + fileToRank;
@@ -757,6 +770,13 @@ public class Node {
         }
         rankingMap.put(fileToRank, newRank);
         return newRank;
+    }
+
+    public double getRankOfFile(String fileName) {
+        if (rankingMap.containsKey(fileName)) {
+            return rankingMap.get(fileName);
+        }
+        return 0;
     }
 
     public Map<String, Long> getReceivedRankMessageMap() {
@@ -806,7 +826,7 @@ public class Node {
         return list.toArray(new String[list.size()]);
     }
 
-    public static String getFileNameFromSearchQuery(String query) {
+    public static String getResourceNameFromSearchQuery(String query) {
         return query.trim().replaceAll("\"", "");
     }
 }
@@ -845,7 +865,7 @@ class NodeThread extends Thread {
                     Node.log(INFO, "RECEIVE: Search query received from '" + responseAddress + ":" +
                             responsePort + "' as '" + incomingMessage + "'");
 
-                    String searchFilename = getFileNameFromSearchQuery(response[4]);
+                    String searchFilename = getResourceNameFromSearchQuery(response[4]);
 
                     List<String> fileSearchResultsList = node.searchInCurrentFileList(searchFilename);
                     String responseString = "";
@@ -883,9 +903,10 @@ class NodeThread extends Thread {
                         }
                     } else {
                         String fileSearchResults = joinSearchResults(fileSearchResultsList);
+                        double rank = node.getRankOfFile(searchFilename);
                         responseString = node.prependLengthToMessage("SEROK " + fileSearchResultsList.size() + " " +
                                 node.getNodeIp() + " " + node.getNodePort() + " \"" + fileSearchResults + "\" " +
-                                Integer.parseInt(response[5]));
+                                Integer.parseInt(response[5]) + " " + rank);
 
                         Node.log(INFO, "FOUND: File found locally : " + responseString);
 
@@ -929,14 +950,23 @@ class NodeThread extends Thread {
                     }
 
                     //0018 RANK 129.82.123.45 "Kung fu panda" 4
-                    String fileToRank = getFileNameFromSearchQuery(response[3]);
-                    List<String> fileSearchResultsList = node.searchInCurrentFileList(fileToRank);
+                    String resourceToRank = getResourceNameFromSearchQuery(response[3]);
+                    List<String> fileSearchResultsList = node.searchInCurrentFileList(resourceToRank);
+                    boolean isForumInCurrentNode = false;
+                    //0018 RANK 129.82.123.45 "129.12.1.13:9876 3" 4
+                    String[] resources = resourceToRank.split(" ");
+                    if (resources.length > 1) {
+                        Forum forum = node.getMatchingForumFromTheList(resources[0], resources[1]);
+                        if (resources[0].equals(node.getNodeIp() + ":" + node.getNodePort()) && forum != null) {
+                            isForumInCurrentNode = true;
+                        }
+                    }
 
-                    if (fileSearchResultsList.size() > 0) {
+                    if (fileSearchResultsList.size() > 0 || isForumInCurrentNode) {
                         int suggestedRank = Integer.parseInt(response[4]);
                         String ranker = response[2];
-                        double newRanking = node.rankFile(incomingMessage, fileToRank, ranker, suggestedRank);
-                        Node.log(INFO, "RANK : '" + fileToRank + "' - '" + newRanking + "'");
+                        double newRanking = node.rankResource(incomingMessage, resourceToRank, ranker, suggestedRank);
+                        Node.log(INFO, "RANK : '" + resourceToRank + "' - '" + newRanking + "'");
                     } else {
                         node.addToReceivedRankMessageMap(incomingMessage, System.currentTimeMillis());
                         node.sendRankingMessageToPeers(incomingMessage);
@@ -959,13 +989,13 @@ class NodeThread extends Thread {
 
                     //0018 RANK 129.82.123.45 "Kung fu panda" 4
 
-                    /*String fileToRank = getFileNameFromSearchQuery(response[3]);
+                    /*String fileToRank = getResourceNameFromSearchQuery(response[3]);
                     List<String> fileSearchResultsList = node.searchInCurrentFileList(fileToRank);
 */
                     /*if (fileSearchResultsList.size() > 0) {
                         int suggestedRank = Integer.parseInt(response[4]);
                         String ranker = response[2];
-                        double newRanking = node.rankFile(incomingMessage, fileToRank, ranker, suggestedRank);
+                        double newRanking = node.rankResource(incomingMessage, fileToRank, ranker, suggestedRank);
                         Node.log(INFO, "RANK : '" + fileToRank + "' - '" + newRanking + "'");
                     } else {*/
                         //node.addToReceivedRankMessageMap(incomingMessage, System.currentTimeMillis());
@@ -997,18 +1027,15 @@ class NodeThread extends Thread {
                         node.removeFromReceivedForumReplyMessageMap(incomingMessage);
                     }
 
-                    Boolean addIfFromOriginator = null;
-                    if (Node.VERIFIED.toString().equals(response[7].toString())) {
-                        addIfFromOriginator = false;
-                    } else {
-                        addIfFromOriginator = true;
-                    }
+//                    Boolean addIfFromOriginator = null;
+                    boolean addIfFromOriginator = !Node.VERIFIED.equals(response[7]);
 
-                    Forum forum = node.addForumReplyToCurrentForumList(response[6], response[4] , response[5] , response[2], response[3], addIfFromOriginator);
+                    Forum forum = node.addForumReplyToCurrentForumList(response[6], response[4], response[5],
+                            response[2], response[3], addIfFromOriginator);
 
                     node.addToReceivedForumReplyMessageMap(incomingMessage, System.currentTimeMillis());
 
-                    if (Node.UNVERIFIED.toString().equals(response[7].toString()) && forum != null) {
+                    if (Node.UNVERIFIED.equals(response[7]) && forum != null) {
                         incomingMessage = incomingMessage.replace(Node.UNVERIFIED, Node.VERIFIED);
                     }
 

@@ -1,4 +1,4 @@
-package main.java.project;
+package project;
 
 public class ForumReply {
     private String reply;
